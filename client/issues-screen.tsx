@@ -23,7 +23,7 @@ import { pickProject, remoteOnlyProjects, showProjectSelector, type ProjectOptio
 import { OTHER_HOSTS_QUERY_KEY, useOtherHosts } from "./other-hosts";
 import { ProjectSelector } from "./project-selector";
 import { createOnHost } from "./remote-create";
-import { PAGE_QUERY_KEY, RepoTable } from "./repo-table";
+import { PAGE_QUERY_KEY, PULL_REQUESTS_QUERY_KEY, RepoTable } from "./repo-table";
 import { SearchBar } from "./search-bar";
 
 const PROJECTS_QUERY_KEY = ["issues.projects"];
@@ -48,16 +48,24 @@ export function IssuesScreen({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [pending, setPending] = useState<number | null>(null);
-  // One menu at a time: a filter menu in the table header, or one issue's create menu.
+  // One menu at a time: filters, workspace creation, or an issue's PRs.
   const [openMenu, setFilterMenu] = useState<MenuId | null>(null);
   const [createMenu, setCreateMenu] = useState<number | null>(null);
+  const [pullRequestsMenu, setPullRequestsMenu] = useState<number | null>(null);
   const setOpenMenu = (menu: MenuId | null) => {
     setFilterMenu(menu);
     setCreateMenu(null);
+    setPullRequestsMenu(null);
   };
   const openCreateMenu = (issue: number | null) => {
     setFilterMenu(null);
     setCreateMenu(issue);
+    setPullRequestsMenu(null);
+  };
+  const openPullRequestsMenu = (issue: number | null) => {
+    setFilterMenu(null);
+    setCreateMenu(null);
+    setPullRequestsMenu(issue);
   };
   const [page, setPage] = useState(1);
   const scroller = useRef<NativeScrollView>(null);
@@ -106,6 +114,8 @@ export function IssuesScreen({
     return settings.save({ ...settings.values, ...patch }, settings.revision);
   }
   function search(next: string) {
+    setPullRequestsMenu(null);
+    setCreateMenu(null);
     setQueryChoice(next);
     setPage(1);
     void savePreferences({ searchQuery: next });
@@ -168,9 +178,9 @@ export function IssuesScreen({
 
   return (
     <ScrollView ref={scroller} style={s.screen} contentContainerStyle={s.content}>
-      {openMenu || createMenu !== null ? (
+      {openMenu || createMenu !== null || pullRequestsMenu !== null ? (
         <Pressable
-          accessibilityLabel={openMenu ? "Close filter menu" : "Close menu"}
+          accessibilityLabel={openMenu ? "Close filter menu" : pullRequestsMenu !== null ? "Dismiss pull requests" : "Close menu"}
           onPress={() => setOpenMenu(null)}
           style={s.backdrop}
         />
@@ -199,6 +209,7 @@ export function IssuesScreen({
             void others.refetch();
             void queryClient.invalidateQueries({ queryKey: COUNTS_QUERY_KEY });
             void queryClient.invalidateQueries({ queryKey: PAGE_QUERY_KEY });
+            void queryClient.invalidateQueries({ queryKey: PULL_REQUESTS_QUERY_KEY });
           }}
           style={s.iconButton}
         >
@@ -254,8 +265,10 @@ export function IssuesScreen({
                 (selected.remote ? `${selected.remote.hostLabel}'s default agent` : "the host's default agent")
               }
               menuOpen={openMenu !== null}
-            createMenuFor={createMenu}
-            onCreateMenu={openCreateMenu}
+              createMenuFor={createMenu}
+              onCreateMenu={openCreateMenu}
+              pullRequestsFor={pullRequestsMenu}
+              onPullRequestsMenu={openPullRequestsMenu}
               onDismissMenu={() => setOpenMenu(null)}
               headerControls={
                 <FilterControls

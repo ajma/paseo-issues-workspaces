@@ -170,6 +170,28 @@ const issue = z.object({
 });
 export type Issue = z.infer<typeof issue>;
 
+const pullRequest = z.object({
+  number: z.number().int().positive(),
+  title: z.string(),
+  url: z.string(),
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]),
+  isDraft: z.boolean(),
+  reviewDecision: z.string().nullable(),
+  mergeable: z.string(),
+  mergeStateStatus: z.string(),
+});
+export type PullRequest = z.infer<typeof pullRequest>;
+
+/** GitHub's closing PR links for the visible issues, fetched independently of the issue search. */
+export const pullRequestsRpc = defineRpc({
+  name: "issues.pull-requests",
+  input: z.object({
+    repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    numbers: z.array(z.number().int().positive()).max(PAGE_SIZE),
+  }),
+  output: z.object({ pullRequests: z.record(z.string(), z.array(pullRequest)) }),
+});
+
 /** A GitHub repository behind one or more of this host's projects. */
 const repoProject = z.object({
   /** The project new workspaces go to: a main checkout rather than a linked worktree. */

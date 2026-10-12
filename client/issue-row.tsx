@@ -3,9 +3,10 @@ import { openExternalUrl } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View, type Role } from "react-native";
-import type { CreateAction, Density, Issue } from "../shared/issues";
+import type { CreateAction, Density, Issue, PullRequest } from "../shared/issues";
 import { isDarkTheme, labelColors, openIssueColor, timeAgo } from "./github-style";
 import type { RemoteWorkspace } from "./issue-list";
+import { PR_COLUMN_WIDTH, PullRequestsCell, WORKSPACE_COLUMN_WIDTH } from "./pull-request-status";
 
 type Props = Pick<PluginScreenProps, "theme" | "layout" | "navigation">;
 
@@ -15,6 +16,7 @@ type Props = Pick<PluginScreenProps, "theme" | "layout" | "navigation">;
  */
 export function IssueRow({
   issue,
+  pullRequests,
   density,
   elsewhere,
   first,
@@ -25,11 +27,14 @@ export function IssueRow({
   workspaceServerId,
   menuOpen = false,
   onMenuOpenChange,
+  pullRequestsOpen = false,
+  onPullRequestsOpenChange,
   theme,
   layout,
   navigation,
 }: Props & {
   issue: Issue;
+  pullRequests?: PullRequest[];
   density: Density;
   /** Workspaces for this issue on other hosts. */
   elsewhere: RemoteWorkspace[];
@@ -45,6 +50,8 @@ export function IssueRow({
   /** This row's create menu is open; the row is raised so the dropdown paints over the rows below. */
   menuOpen?: boolean;
   onMenuOpenChange?: (open: boolean) => void;
+  pullRequestsOpen?: boolean;
+  onPullRequestsOpenChange?: (open: boolean) => void;
 }) {
   const dark = isDarkTheme(theme);
   const dense = density === "compact";
@@ -62,11 +69,12 @@ export function IssueRow({
       icon: { paddingTop: dense ? 2 : 3 },
       body: {
         flex: 1,
+        minWidth: 0,
         flexDirection: (layout.compact ? "column" : "row") as "column" | "row",
         alignItems: (layout.compact ? "stretch" : "center") as "stretch" | "center",
-        gap: layout.compact ? (dense ? 4 : 8) : 16,
+        gap: layout.compact ? (dense ? 4 : 8) : 8,
       },
-      text: { flex: layout.compact ? undefined : 1, gap: dense ? 2 : 4 },
+      text: { flex: layout.compact ? undefined : 1, minWidth: 0, marginRight: layout.compact ? 0 : 8, gap: dense ? 2 : 4 },
       titleLine: { flexDirection: "row" as const, flexWrap: "wrap" as const, alignItems: "center" as const, gap: 6 },
       title: { color: theme.colors.foreground, fontSize: dense ? 14 : 16, fontWeight: "600" as const },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
@@ -78,7 +86,7 @@ export function IssueRow({
   const opened = `#${issue.number} opened ${timeAgo(issue.createdAt)}${issue.author ? ` by ${issue.author}` : ""}`;
 
   return (
-    <View style={[s.row, menuOpen ? { zIndex: 7 } : null]}>
+    <View testID={`issue-row-${issue.number}`} style={[s.row, menuOpen || pullRequestsOpen ? { zIndex: 7 } : null]}>
       <View style={s.icon}>
         <Icon name="CircleDot" size={16} color={openIssueColor(dark)} />
       </View>
@@ -107,28 +115,40 @@ export function IssueRow({
             <ElsewhereLink key={`${w.serverId}/${w.workspaceId}`} workspace={w} style={s.link} navigation={navigation} />
           ))}
         </View>
-        <IssueAction
-          issue={issue}
-          pending={pending}
-          busy={busy}
-          dense={dense}
-          theme={theme}
-          onCreate={onCreate}
-          agentLabel={agentLabel}
-          menuOpen={menuOpen}
-          onMenuOpenChange={onMenuOpenChange ?? (() => {})}
-          sheet={layout.platform !== "web"}
-          onOpen={
-            issue.workspace && navigation
-              ? () =>
-                  navigation.openWorkspace(
-                    workspaceServerId
-                      ? { workspaceId: issue.workspace!.id, serverId: workspaceServerId }
-                      : { workspaceId: issue.workspace!.id },
-                  )
-              : undefined
-          }
-        />
+        <View style={{ width: layout.compact ? undefined : PR_COLUMN_WIDTH, flexShrink: 0, zIndex: pullRequestsOpen ? 1 : 0 }}>
+          <PullRequestsCell
+            issueNumber={issue.number}
+            pullRequests={pullRequests}
+            open={pullRequestsOpen}
+            onOpenChange={onPullRequestsOpenChange ?? (() => {})}
+            theme={theme}
+            layout={layout}
+          />
+        </View>
+        <View style={{ width: layout.compact ? undefined : WORKSPACE_COLUMN_WIDTH, alignItems: "flex-start", flexShrink: 0 }}>
+          <IssueAction
+            issue={issue}
+            pending={pending}
+            busy={busy}
+            dense={dense}
+            theme={theme}
+            onCreate={onCreate}
+            agentLabel={agentLabel}
+            menuOpen={menuOpen}
+            onMenuOpenChange={onMenuOpenChange ?? (() => {})}
+            sheet={layout.platform !== "web"}
+            onOpen={
+              issue.workspace && navigation
+                ? () =>
+                    navigation.openWorkspace(
+                      workspaceServerId
+                        ? { workspaceId: issue.workspace!.id, serverId: workspaceServerId }
+                        : { workspaceId: issue.workspace!.id },
+                    )
+                : undefined
+            }
+          />
+        </View>
       </View>
     </View>
   );

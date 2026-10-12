@@ -10,6 +10,10 @@ As on github.com, the table's header shows the open count and the Author, Labels
 
 Each issue shows GitHub's label colors and a **Create workspace** button, or **Open workspace** when a workspace already covers it. As with GitHub's split buttons, the arrow beside **Create workspace** picks what the button does: **Create workspace** or **Create and start an agent**. Tapping an issue's title opens it on GitHub.
 
+On wide screens, issues, pull requests, and workspace actions occupy separate columns. The PR column shows one PR's review and merge status, prioritizing open PRs with requested changes or merge conflicts. An additional-PR count opens the complete list in a popover, so extra PRs do not make the row taller. Selecting the status also opens the details; selecting a PR number opens GitHub. Narrow screens stack the columns and use a sheet for PR details, as do native clients. Draft, merged, and closed PRs are identified.
+
+Links come from closing references such as `Closes #2` in a PR description or manual links in GitHub's Development section; branch names and plain issue mentions alone do not count. PR status loads separately so an unavailable lookup does not block the issue list or workspace actions. It refreshes every minute while the table is active, and with the Refresh button.
+
 ## How it finds projects
 
 The plugin looks at every git project on the host and reads its remotes. A project is included when a remote points at github.com. When a project has several remotes, it uses the one picked with `gh repo set-default`, then `upstream`, then `origin`, so a fork shows the upstream repository's issues. Projects without a github.com remote are left out. Several projects on the same repository, such as a checkout and a linked worktree, appear once, under the main checkout.
@@ -38,7 +42,7 @@ The selected project, search and density are saved with these settings. Settings
 
 ## Access and limits
 
-The plugin runs `gh` and `git` on the daemon host as the signed-in user. It reads issues, labels, milestones, assignable users and issue types from GitHub and never writes to GitHub. Creating a workspace runs `git fetch` for the default branch and creates a local branch and worktree.
+The plugin runs `gh` and `git` on the daemon host as the signed-in user. It reads issues, linked pull requests, labels, milestones, assignable users and issue types from GitHub and never writes to GitHub. Creating a workspace runs `git fetch` for the default branch and creates a local branch and worktree.
 
 **Create and start an agent** puts the issue's title and URL in the agent's first message, and the default prompt has the agent read the issue and its comments. Anyone who can open or comment on issues in the repository controls that text, so for public repositories review the agent prompt and the agent's permissions before using it.
 

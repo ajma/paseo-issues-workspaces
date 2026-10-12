@@ -12,6 +12,7 @@ A [Paseo](https://paseo.sh) plugin that shows a project's open GitHub issues, la
 - **Create workspace** creates a worktree on a new `issue/<number>-<slug>` branch from a freshly fetched default branch, titled `#<number> <title>`.
 - **Create and start an agent** also starts an agent in the new workspace with a prompt you can edit. Pick it from the arrow beside the button, as on GitHub.
 - **Knows what you already started.** An issue with a workspace shows **Open workspace** instead, including workspaces on other connected hosts. A leftover local branch blocks a duplicate.
+- **Linked pull requests.** A dedicated column shows one PR with review and merge status, prioritizing PRs that need attention. Select the PR number to open GitHub, or the status / additional-PR count to see every linked PR in a popover (a sheet on mobile). Extra PRs do not make the issue row taller. Draft, merged, and closed PRs are identified too.
 - **Works across hosts.** Projects that only another connected host has get their own tabs, and their workspaces are created on that host.
 
 ## Requirements
@@ -51,6 +52,7 @@ Settings are stored on each host and shared by every client connected to it.
 - **Finding the repository.** A project's GitHub repository comes from its git remotes: the one picked with `gh repo set-default`, then `upstream`, then `origin`. A fork therefore shows the upstream repository's issues. Projects without a github.com remote are left out.
 - **Detecting workspaces.** An issue counts as having a workspace when a workspace title starts with `#<number>`, or its branch starts with the branch prefix and the number.
 - **GitHub access.** Issues come from GitHub's search API through `gh`, which allows 30 searches a minute and returns at most 1,000 results per search. The plugin only reads from GitHub; it never writes to it.
+- **PR status.** GitHub's closing links (such as `Closes #2` in a PR description or a manual Development link) connect PRs to issues. PR status loads separately through GraphQL and refreshes every minute while the table is active, or when you press Refresh. Branch names and plain issue mentions alone do not establish a link.
 
 > [!NOTE]
 > **Create and start an agent** sends the issue's title and URL to the agent, and the default prompt has it read the issue and its comments. On a public repository anyone can write that text, so review the prompt and the agent's permissions.

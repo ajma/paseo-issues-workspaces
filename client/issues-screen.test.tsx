@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PREFERENCES, type Issue, type Preferences, type RepoProject } from "../shared/issues";
+import { DEFAULT_PREFERENCES, type Issue, type Preferences, type PullRequest, type RepoProject } from "../shared/issues";
 import { host, readySettings, resetHost } from "./test-host";
 
 vi.mock("@getpaseo/plugin/client", async () => (await import("./test-host")).clientModule);
@@ -128,13 +128,13 @@ function oneProject(issues: Issue[] | Error) {
 
 const navigation = { openWorkspace: vi.fn(), openAgent: vi.fn() };
 
-function renderScreen({ compact = false, light = false }: { compact?: boolean; light?: boolean } = {}) {
+function renderScreen({ compact = false, light = false, platform = "web" }: { compact?: boolean; light?: boolean; platform?: "web" | "ios" } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <IssuesScreen
         theme={light ? lightTheme : theme}
-        layout={{ compact, platform: "web" }}
+        layout={{ compact, platform }}
         host={{ id: "srv_here", label: "Laptop" }}
         navigation={navigation}
         params={{}}
@@ -171,9 +171,191 @@ function paintsAbove(a: Element, b: Element) {
 
 beforeEach(() => {
   resetHost();
+  host.rpcs.set("issues.pull-requests", async () => ({ pullRequests: {} }));
   navigation.openWorkspace.mockClear();
 });
 afterEach(cleanup);
+
+const pullRequest = (overrides: Partial<PullRequest> = {}): PullRequest => ({
+  number: 42,
+  title: "Fix the issue",
+  url: `https://github.com/octo/repo/pull/${overrides.number ?? 42}`,
+  state: "OPEN",
+  isDraft: false,
+  reviewDecision: "APPROVED",
+  mergeable: "MERGEABLE",
+  mergeStateStatus: "CLEAN",
+  ...overrides,
+});
+
+describe("issues screen: pull requests", () => {
+  it.each([false, true])("shows multiple linked PRs and opens the selected PR (compact: %s)", async (compact) => {
+    readySettings(prefs({ density: compact ? "compact" : "comfortable" }));
+    oneProject([issue(1), issue(2)]);
+    const requests = vi.fn(async () => ({ pullRequests: {
+      "1": [pullRequest(), pullRequest({ number: 43, url: "https://github.com/other/repo/pull/43", state: "MERGED" })],
+      "2": [],
+    } }));
+    host.rpcs.set("issues.pull-requests", requests);
+    renderScreen({ compact, light: compact });
+    const link = await screen.findByRole("link", { name: "Open pull request 42 on GitHub: Fix the issue" });
+    expect(requests).toHaveBeenCalledWith({ repo: "octo/repo", numbers: [1, 2] });
+    expect(screen.getAllByText("Approved")).toHaveLength(1);
+    expect(screen.getByText("Mergeable")).toBeTruthy();
+    expect(screen.queryByText("Merged")).toBeNull();
+    fireEvent.click(link);
+    expect(host.opened).toEqual(["https://github.com/octo/repo/pull/42"]);
+    fireEvent.click(screen.getByRole("button", { name: "Show all 2 pull requests for issue 1" }));
+    const list = await screen.findByRole("dialog", { name: "Pull requests for issue 1" });
+    expect(within(list).getByText("Merged")).toBeTruthy();
+    fireEvent.click(within(list).getByRole("link", { name: "Open pull request 43 on GitHub: Fix the issue" }));
+    expect(host.opened.at(-1)).toBe("https://github.com/other/repo/pull/43");
+    expect(screen.getByRole("button", { name: "Create workspace for issue 1" })).toBeTruthy();
+  });
+
+  it.each([
+    [{ reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "BLOCKED" }, "Changes requested", "Merge blocked"],
+    [{ reviewDecision: "REVIEW_REQUIRED", mergeable: "CONFLICTING" }, "Review required", "Merge conflicts"],
+    [{ reviewDecision: null, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }, "No review decision", "Mergeability unknown"],
+    [{ isDraft: true }, "Approved", "Draft"],
+    [{ state: "CLOSED" }, "Approved", "Closed"],
+    [{ mergeStateStatus: "BEHIND" }, "Approved", "Branch out of date"],
+    [{ mergeStateStatus: "UNSTABLE" }, "Approved", "Checks not passing"],
+    [{ mergeStateStatus: "FUTURE_STATE" }, "Approved", "Mergeability unknown"],
+  ] as [Partial<PullRequest>, string, string][])("renders review and merge states: %j", async (overrides, review, merge) => {
+    readySettings(prefs());
+    oneProject([issue(1)]);
+    host.rpcs.set("issues.pull-requests", async () => ({ pullRequests: { "1": [pullRequest(overrides)] } }));
+    renderScreen();
+    expect(await screen.findByText(merge)).toBeTruthy();
+    expect(screen.getByText(review)).toBeTruthy();
+    expect(screen.queryByText("Mergeable")).toBeNull();
+  });
+
+  it("keeps issues usable during a slow PR lookup, reports failure, and retries on refresh", async () => {
+    readySettings(prefs());
+    oneProject([issue(1)]);
+    let reject!: (error: Error) => void;
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
+      .mockResolvedValue({ pullRequests: { "1": [pullRequest()] } });
+    host.rpcs.set("issues.pull-requests", fetch);
+    renderScreen();
+    expect(await screen.findByRole("button", { name: "Create workspace for issue 1" })).toBeTruthy();
+    expect(await screen.findByText("Updating PR status…")).toBeTruthy();
+    await act(async () => reject(new Error("GitHub unavailable")));
+    expect(await screen.findByText(/Could not load PR status: GitHub unavailable/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh issues" }));
+    expect(await screen.findByText("Mergeable")).toBeTruthy();
+    expect(screen.queryByText(/Could not load PR status/)).toBeNull();
+  });
+
+  it("does not request PR status for an empty page", async () => {
+    readySettings(prefs());
+    oneProject([]);
+    const fetch = vi.fn();
+    host.rpcs.set("issues.pull-requests", fetch);
+    renderScreen();
+    await screen.findByText("No results matched your search.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("fetches only visible issue numbers and keeps PRs scoped to their repository", async () => {
+    readySettings(prefs());
+    serveProjects([project("octo/a"), project("octo/b")]);
+    serveOptions();
+    servePages({
+      "p-octo/a": Array.from({ length: 26 }, (_, i) => issue(i + 1)),
+      "p-octo/b": [issue(26)],
+    });
+    const requests: { repo: string; numbers: number[] }[] = [];
+    let resolveB!: (value: unknown) => void;
+    host.rpcs.set("issues.pull-requests", async (input) => {
+      const request = input as { repo: string; numbers: number[] };
+      requests.push(request);
+      if (request.repo === "octo/b") return new Promise((resolve) => { resolveB = resolve; });
+      return { pullRequests: Object.fromEntries(request.numbers.map((n) => [n, [pullRequest({ title: `PR for a/${n}` })]])) };
+    });
+    renderScreen();
+    await screen.findByRole("link", { name: "Open pull request 42 on GitHub: PR for a/1" });
+    expect(requests[0]).toEqual({ repo: "octo/a", numbers: Array.from({ length: 25 }, (_, i) => i + 1) });
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByRole("link", { name: "Open pull request 42 on GitHub: PR for a/26" });
+    expect(screen.queryByRole("link", { name: "Open pull request 42 on GitHub: PR for a/1" })).toBeNull();
+    expect(requests[1]).toEqual({ repo: "octo/a", numbers: [26] });
+    fireEvent.click(screen.getByRole("tab", { name: "b (octo/b)" }));
+    await waitFor(() => expect(requests[2]).toEqual({ repo: "octo/b", numbers: [26] }));
+    expect(screen.queryByRole("link", { name: "Open pull request 42 on GitHub: PR for a/26" })).toBeNull();
+    await act(async () => resolveB({ pullRequests: { "26": [pullRequest({ title: "PR for b/26" })] } }));
+    await screen.findByRole("link", { name: "Open pull request 42 on GitHub: PR for b/26" });
+  });
+
+  it("refreshes a previously loaded PR's review and merge state", async () => {
+    readySettings(prefs());
+    oneProject([issue(1)]);
+    const fetch = vi.fn().mockResolvedValueOnce({ pullRequests: { "1": [pullRequest()] } })
+      .mockResolvedValue({ pullRequests: { "1": [pullRequest({ reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "BLOCKED" })] } });
+    host.rpcs.set("issues.pull-requests", fetch);
+    renderScreen();
+    await screen.findByText("Mergeable");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh issues" }));
+    await screen.findByText("Changes requested");
+    expect(screen.getByText("Merge blocked")).toBeTruthy();
+    expect(screen.queryByText("Approved")).toBeNull();
+    expect(screen.queryByText("Mergeable")).toBeNull();
+  });
+
+  it.each([
+    { reviewDecision: "CHANGES_REQUESTED" },
+    { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" },
+  ])("summarizes the PR needing attention, hiding extra PRs until expanded: %j", async (blocked) => {
+    readySettings(prefs());
+    oneProject([issue(1), issue(2)]);
+    host.rpcs.set("issues.pull-requests", async () => ({ pullRequests: { "1": [
+      pullRequest(),
+      pullRequest({ number: 43, url: "https://github.com/octo/repo/pull/43", ...blocked }),
+      pullRequest({ number: 44, state: "CLOSED", reviewDecision: "CHANGES_REQUESTED" }),
+    ] } }));
+    renderScreen();
+    const primary = await screen.findByRole("link", { name: "Open pull request 43 on GitHub: Fix the issue" });
+    expect(screen.queryByRole("link", { name: "Open pull request 42 on GitHub: Fix the issue" })).toBeNull();
+    expect(screen.getByText("+2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show all 3 pull requests for issue 1" }));
+    const list = screen.getByRole("dialog", { name: "Pull requests for issue 1" });
+    expect(within(list).getAllByRole("link")).toHaveLength(3);
+    expect(getComputedStyle(list).position).toBe("absolute");
+    expect(paintsAbove(list, screen.getByRole("link", { name: "Open issue 2 on GitHub: Issue 2" }))).toBe(true);
+    fireEvent.click(within(list).getByRole("button", { name: "Close pull requests" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(primary);
+    expect(host.opened).toEqual(["https://github.com/octo/repo/pull/43"]);
+  });
+
+  it.each([{ compact: true }, { platform: "ios" as const }])("uses a sheet on small or native layouts: %j", async (layout) => {
+    readySettings(prefs());
+    oneProject([issue(1)]);
+    host.rpcs.set("issues.pull-requests", async () => ({ pullRequests: { "1": [pullRequest(), pullRequest({ number: 43 })] } }));
+    renderScreen(layout);
+    fireEvent.click(await screen.findByRole("button", { name: "Show all 2 pull requests for issue 1" }));
+    const sheet = screen.getByRole("dialog", { name: "Pull requests for issue 1" });
+    expect(getComputedStyle(sheet).position).not.toBe("absolute");
+    expect(within(sheet).getAllByRole("link")).toHaveLength(2);
+  });
+
+  it("dismisses PR details before opening a filter or create menu", async () => {
+    readySettings(prefs());
+    oneProject([issue(1)]);
+    host.rpcs.set("issues.pull-requests", async () => ({ pullRequests: { "1": [pullRequest(), pullRequest({ number: 43 })] } }));
+    renderScreen();
+    const more = await screen.findByRole("button", { name: "Show all 2 pull requests for issue 1" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("button", { name: "More ways to create a workspace for issue 1" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(more);
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Labels/ }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
 
 // --- Loading ------------------------------------------------------------------------------------
 
@@ -1184,6 +1366,19 @@ describe("issues screen: projects on other hosts", () => {
     host.remoteProjects.set("srv_box", projects);
     host.remoteWorkspaces.set("srv_box", workspaces);
   }
+
+  it("shows PR status for an issue in a project only another host has", async () => {
+    readySettings(prefs({ selectedRepo: "octo/there" }));
+    serveProjects([]);
+    serveOptions();
+    servePages({ "octo/there": [issue(9)] });
+    buildBox([remoteProject("octo/there")]);
+    const fetch = vi.fn(async () => ({ pullRequests: { "9": [pullRequest()] } }));
+    host.rpcs.set("issues.pull-requests", fetch);
+    renderScreen({ compact: true });
+    expect(await screen.findByText("Mergeable")).toBeTruthy();
+    expect(fetch).toHaveBeenCalledWith({ repo: "octo/there", numbers: [9] });
+  });
 
   it("offers a project only another host has, labelled with that host", async () => {
     readySettings(prefs());

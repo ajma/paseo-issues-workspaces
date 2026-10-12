@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PREFERENCES, type Preferences } from "../shared/issues";
+import { DEFAULT_PREFERENCES, pullRequestsRpc, type Preferences, type PullRequest } from "../shared/issues";
 
 // Real git runs against temporary repositories; gh, `git fetch` and the Paseo API are faked.
 const execFileAsync = promisify(execFile);
@@ -198,6 +198,66 @@ beforeEach(async () => {
   mod = await import("./issues");
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe("pullRequests", () => {
+  const pr = (number: number, overrides: Partial<PullRequest> = {}): PullRequest => ({
+    number, title: `PR ${number}`, url: `https://github.com/octo/repo/pull/${number}`,
+    state: "OPEN", isDraft: false, reviewDecision: "APPROVED", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+    ...overrides,
+  });
+  const connection = (nodes: (PullRequest | null)[], endCursor: string | null = null) => ({
+    closedByPullRequestsReferences: { nodes, pageInfo: { hasNextPage: endCursor !== null, endCursor } },
+  });
+
+  it("batches visible issues, includes closed PRs, follows pagination, and preserves cross-repo links", async () => {
+    const open = pr(10, { reviewDecision: "CHANGES_REQUESTED", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
+    const merged = pr(11, { state: "MERGED", url: "https://github.com/other/project/pull/11" });
+    const draft = pr(12, { isDraft: true, reviewDecision: null, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" });
+    let calls = 0;
+    fake.gh = (args) => {
+      const fields = searchFields(args);
+      expect(args.slice(0, 2)).toEqual(["api", "graphql"]);
+      expect(fields.owner).toBe("octo");
+      expect(fields.name).toBe("repo");
+      expect(fields.query).toContain("includeClosedPrs: true");
+      if (++calls === 1) {
+        expect(fields.query.match(/issue\(number:/g)).toHaveLength(2);
+        return JSON.stringify({ data: { repository: { i1: connection([merged, open, null], "next"), i2: connection([]) } } });
+      }
+      expect(fields.query).toContain('after: "next"');
+      expect(fields.query).not.toContain("i2:");
+      return JSON.stringify({ data: { repository: { i1: connection([open, draft]) } } });
+    };
+    const result = await mod.pullRequests({ repo: "octo/repo", numbers: [1, 2, 1] });
+    expect(result).toEqual({ pullRequests: { "1": [open, draft, merged], "2": [] } });
+    expect(pullRequestsRpc.output.parse(result)).toEqual(result);
+    expect(calls).toBe(2);
+  });
+
+  it("makes no GitHub call for an empty page", async () => {
+    expect(await mod.pullRequests({ repo: "octo/repo", numbers: [] })).toEqual({ pullRequests: {} });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it.each([
+    { errors: [{ message: "Permission denied" }], data: { repository: { i1: connection([]) } } },
+    { data: { repository: null } },
+    { data: { repository: { i1: null } } },
+  ])("reports inaccessible or partial results instead of claiming there are no PRs: %j", async (response) => {
+    fake.gh = () => JSON.stringify(response);
+    await expect(mod.pullRequests({ repo: "octo/repo", numbers: [1] })).rejects.toThrow();
+  });
+
+  it("surfaces CLI errors", async () => {
+    fake.gh = () => ghError("API rate limit exceeded");
+    await expect(mod.pullRequests({ repo: "octo/repo", numbers: [1] })).rejects.toThrow("API rate limit exceeded");
+  });
+
+  it.each([[-1], [1.5], Array.from({ length: 26 }, (_, i) => i + 1)])("rejects invalid issue batches: %j", async (...numbers) => {
+    await expect(mod.pullRequests({ repo: "octo/repo", numbers })).rejects.toThrow();
+    expect(fake.calls).toEqual([]);
+  });
+});
 
 // --- projectList --------------------------------------------------------------------------------
 

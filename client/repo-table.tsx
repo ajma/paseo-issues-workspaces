@@ -2,15 +2,17 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { issuesPageRpc, pageCountFor, type CreateAction, type Density, type Issue } from "../shared/issues";
+import { issuesPageRpc, pageCountFor, pullRequestsRpc, type CreateAction, type Density, type Issue } from "../shared/issues";
 import { isDarkTheme, openIssueColor } from "./github-style";
 import { findRemoteWorkspaces, withRemoteCoverage, type ProjectOption, type RemoteWorkspace } from "./issue-list";
 import { IssueRow } from "./issue-row";
 import { Pager } from "./pager";
+import { PR_COLUMN_WIDTH, WORKSPACE_COLUMN_WIDTH } from "./pull-request-status";
 
 export const PAGE_QUERY_KEY = ["issues.page"];
+export const PULL_REQUESTS_QUERY_KEY = ["issues.pull-requests"];
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const formatCount = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -36,6 +38,8 @@ export function RepoTable({
   onDismissMenu,
   createMenuFor = null,
   onCreateMenu,
+  pullRequestsFor = null,
+  onPullRequestsMenu,
   theme,
   layout,
   navigation,
@@ -61,7 +65,16 @@ export function RepoTable({
   /** The issue whose create menu is open. */
   createMenuFor?: number | null;
   onCreateMenu?: (issue: number | null) => void;
+  pullRequestsFor?: number | null;
+  onPullRequestsMenu?: (issue: number | null) => void;
 }) {
+  const [tableWidth, setTableWidth] = useState(0);
+  const rowLayout = { ...layout, compact: layout.compact || (tableWidth > 0 && tableWidth < 840) };
+  const rowMenuOpen = createMenuFor !== null || pullRequestsFor !== null;
+  const dismissRowMenu = () => {
+    onCreateMenu?.(null);
+    onPullRequestsMenu?.(null);
+  };
   const fetchPage = useRpc(issuesPageRpc);
   const result = useQuery({
     queryKey: [...PAGE_QUERY_KEY, project.key, query, page],
@@ -75,6 +88,15 @@ export function RepoTable({
 
   const remote = project.remote;
   const raw = result.data?.issues ?? [];
+  const fetchPullRequests = useRpc(pullRequestsRpc);
+  const numbers = raw.map((issue) => issue.number);
+  const prs = useQuery({
+    queryKey: [...PULL_REQUESTS_QUERY_KEY, project.repo, numbers],
+    queryFn: () => fetchPullRequests({ repo: project.repo, numbers }),
+    enabled: numbers.length > 0 && !result.isPlaceholderData && result.isSuccess,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
   // Another host's project is covered by that host's workspaces; the server only knows this host's.
   const issues = remote
     ? withRemoteCoverage(raw, otherHostWorkspaces, remote.serverId, project.repo, branchPrefix)
@@ -119,7 +141,7 @@ export function RepoTable({
   return (
     <View style={{ gap: 12 }}>
       {/* Above the pager while a row's menu is open, so a dropdown on the last row stays on top. */}
-      <View style={[s.box, createMenuFor !== null ? { zIndex: 1 } : null]}>
+      <View onLayout={(event) => setTableWidth(event.nativeEvent.layout.width)} style={[s.box, rowMenuOpen ? { zIndex: 1 } : null]}>
         <View style={s.header}>
           <View style={s.summary}>
             <Icon name="CircleDot" size={16} color={openIssueColor(dark)} />
@@ -131,6 +153,13 @@ export function RepoTable({
           </View>
           {headerControls}
         </View>
+        {!rowLayout.compact ? (
+          <View style={{ flexDirection: "row", gap: 8, paddingLeft: 40, paddingRight: 16, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
+            <Text style={[s.repo, { flex: 1, marginRight: 8 }]}>Issue</Text>
+            <Text style={[s.repo, { width: PR_COLUMN_WIDTH }]}>Pull requests</Text>
+            <Text style={[s.repo, { width: WORKSPACE_COLUMN_WIDTH }]}>Workspace</Text>
+          </View>
+        ) : null}
         {menuOpen ? (
           // Above the rows, below the header and its dropdown.
           <Pressable
@@ -140,18 +169,24 @@ export function RepoTable({
           />
         ) : null}
         {result.isError ? <Text style={s.error}>Could not load issues: {message(result.error)}</Text> : null}
+        {raw.length > 0 && !stale && prs.isError ? (
+          <Text style={s.error}>Could not load PR status: {message(prs.error)}. Use Refresh issues to retry.</Text>
+        ) : null}
+        {prs.isFetching ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, padding: 8 }}>Updating PR status…</Text>
+        ) : null}
         {result.isPending ? (
           <View style={s.loading}>
             <ActivityIndicator color={theme.colors.foregroundMuted} />
           </View>
         ) : null}
         {result.isSuccess && !raw.length ? <Text style={s.empty}>No results matched your search.</Text> : null}
-        <View style={[stale ? { opacity: 0.5 } : null, createMenuFor !== null ? { zIndex: 6 } : null]}>
-          {createMenuFor !== null ? (
+        <View style={[stale ? { opacity: 0.5 } : null, rowMenuOpen ? { zIndex: 6 } : null]}>
+          {rowMenuOpen ? (
             // Covers the rows, under the row whose menu is open.
             <Pressable
-              accessibilityLabel="Close menu"
-              onPress={() => onCreateMenu?.(null)}
+              accessibilityLabel={pullRequestsFor !== null ? "Dismiss pull requests" : "Close menu"}
+              onPress={dismissRowMenu}
               style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 5 }}
             />
           ) : null}
@@ -159,6 +194,7 @@ export function RepoTable({
             <IssueRow
               key={issue.number}
               issue={issue}
+              pullRequests={stale ? undefined : prs.data?.pullRequests[issue.number]}
               density={density}
               elsewhere={
                 remote || issue.workspace
@@ -173,8 +209,10 @@ export function RepoTable({
               workspaceServerId={remote?.serverId}
               menuOpen={createMenuFor === issue.number}
               onMenuOpenChange={(open) => onCreateMenu?.(open ? issue.number : null)}
+              pullRequestsOpen={!stale && pullRequestsFor === issue.number}
+              onPullRequestsOpenChange={(open) => onPullRequestsMenu?.(open ? issue.number : null)}
               theme={theme}
-              layout={layout}
+              layout={rowLayout}
               navigation={navigation}
             />
           ))}

@@ -5,9 +5,10 @@ import { DEFAULT_PREFERENCES, preferences } from "../shared/issues";
 const projectList = vi.fn(async (..._args: unknown[]) => ({ ok: "projects" }));
 const filterOptions = vi.fn(async (..._args: unknown[]) => ({ ok: "options" }));
 const issueDetails = vi.fn(async (..._args: unknown[]) => ({ ok: "details" }));
+const pullRequests = vi.fn(async (..._args: unknown[]) => ({ pullRequests: {} }));
 const issuesPage = vi.fn(async (..._args: unknown[]) => ({ ok: "page" }));
 const createWorkspace = vi.fn(async (..._args: unknown[]) => ({ ok: "create" }));
-vi.mock("./issues", () => ({ projectList, issuesPage, filterOptions, issueDetails, createWorkspace }));
+vi.mock("./issues", () => ({ projectList, issuesPage, filterOptions, issueDetails, createWorkspace, pullRequests }));
 
 const { default: contribute } = await import("../index.server");
 
@@ -46,6 +47,7 @@ describe("index.server", () => {
       "issues.filter-options",
       "issues.page",
       "issues.projects",
+      "issues.pull-requests",
     ]);
   });
 
@@ -56,10 +58,12 @@ describe("index.server", () => {
     await handlers.get("issues.projects")!({}, { paseo });
     await handlers.get("issues.filter-options")!({ repo: "o/r" }, { paseo });
     await handlers.get("issues.details")!({ repo: "o/r", number: 3 }, { paseo });
+    await handlers.get("issues.pull-requests")!({ repo: "o/r", numbers: [3] }, { paseo });
 
     expect(projectList).toHaveBeenCalledWith(paseo);
     expect(filterOptions).toHaveBeenCalledWith({ repo: "o/r" });
     expect(issueDetails).toHaveBeenCalledWith({ repo: "o/r", number: 3 });
+    expect(pullRequests).toHaveBeenCalledWith({ repo: "o/r", numbers: [3] });
   });
 
   it("hands a page request to issuesPage", async () => {
