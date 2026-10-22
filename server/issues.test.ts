@@ -918,7 +918,9 @@ describe("filterOptions", () => {
     expect(milestones[1]).toBe("repos/octo/repo/milestones?state=open&per_page=100");
     expect(milestones).toContain("--paginate");
     const types = ghCalls("api graphql")[0].args;
-    expect(types).toEqual(expect.arrayContaining(["owner=octo", "name=repo"]));
+    // As raw strings: gh's -F would read a value starting with @ from a file.
+    expect(types).toEqual(expect.arrayContaining(["-f", "owner=octo", "-f", "name=repo"]));
+    expect(types).not.toContain("-F");
     expect(types.at(-1)).toContain("select(.isEnabled)");
   });
 
@@ -938,6 +940,11 @@ describe("filterOptions", () => {
   it("says how to install gh when it is missing", async () => {
     fake.ghInstalled = false;
     await expect(mod.filterOptions({ repo: "octo/repo" })).rejects.toThrow("is not installed");
+  });
+
+  it.each(["../../etc/passwd", "octo", "octo/repo extra", "a/b/c"])("refuses %j as a repository, calling nothing", async (repo) => {
+    await expect(mod.filterOptions({ repo })).rejects.toThrow();
+    expect(fake.calls).toEqual([]);
   });
 });
 

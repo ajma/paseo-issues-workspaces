@@ -206,11 +206,14 @@ const pullRequest = z.object({
 });
 export type PullRequest = z.infer<typeof pullRequest>;
 
+/** `owner/repo`: one slash, no spaces. */
+const repoSlug = z.string().regex(/^[^/\s]+\/[^/\s]+$/);
+
 /** GitHub's closing PR links for the visible issues, fetched independently of the issue search. */
 export const pullRequestsRpc = defineRpc({
   name: "issues.pull-requests",
   input: z.object({
-    repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    repo: repoSlug,
     numbers: z.array(z.number().int().positive()).max(PAGE_SIZE),
   }),
   output: z.object({ pullRequests: z.record(z.string(), z.array(pullRequest)) }),
@@ -262,7 +265,7 @@ const named = z.object({ name: z.string(), color: z.string(), description: z.str
 /** What the filter menus offer for one repository. */
 export const filterOptionsRpc = defineRpc({
   name: "issues.filter-options",
-  input: z.object({ repo: z.string() }),
+  input: z.object({ repo: repoSlug }),
   output: z.object({
     /** The signed-in GitHub login, which `@me` stands for. */
     me: z.string().nullable(),

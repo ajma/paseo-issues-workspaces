@@ -3,6 +3,7 @@ import { paseoHome, projectIcon } from "./project-icons";
 import {
   branchName,
   defaultAgent,
+  filterOptionsRpc,
   issueMatcher,
   offeredEffort,
   PAGE_SIZE,
@@ -460,7 +461,8 @@ const jsonLines = <T>(stdout: string): T[] =>
 type Named = { name: string; color: string; description: string | null };
 
 /** Labels, milestones, people and issue types for the filter menus. A part that fails is left empty. */
-export async function filterOptions({ repo }: { repo: string }) {
+export async function filterOptions(input: { repo: string }) {
+  const { repo } = filterOptionsRpc.input.parse(input);
   await findGh();
   const [owner, name] = repo.split("/");
   const [me, labels, milestones, users, types] = await Promise.all([
@@ -486,7 +488,8 @@ export async function filterOptions({ repo }: { repo: string }) {
       gh([
         "api", "graphql",
         "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issueTypes(first:50){nodes{name color description isEnabled}}}}",
-        "-F", `owner=${owner}`, "-F", `name=${name}`,
+        // -f, not -F: -F reads a value starting with @ from a file and turns digits into numbers.
+        "-f", `owner=${owner}`, "-f", `name=${name}`,
         "--jq", ".data.repository.issueTypes.nodes // [] | .[] | select(.isEnabled) | {name, color, description}",
       ]).then((r) => jsonLines<Named>(r.stdout)),
     ),
