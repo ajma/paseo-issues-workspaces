@@ -17,6 +17,18 @@ export function pageCountFor(totalCount: number): number {
 export const DENSITIES = ["comfortable", "compact"] as const;
 export type Density = (typeof DENSITIES)[number];
 
+/** GitHub's issue sort orders, as `<search API sort>-<order>`. */
+export const SORTS = ["created-desc", "created-asc", "updated-desc", "updated-asc", "comments-desc", "reactions-desc"] as const;
+export type Sort = (typeof SORTS)[number];
+export const SORT_LABELS: Record<Sort, string> = {
+  "created-desc": "Newest",
+  "created-asc": "Oldest",
+  "updated-desc": "Recently updated",
+  "updated-asc": "Least recently updated",
+  "comments-desc": "Most commented",
+  "reactions-desc": "Most reactions",
+};
+
 export const DEFAULT_AGENT_PROMPT = `Work on GitHub issue #{number} in {repo}: {title}
 {url}
 
@@ -26,6 +38,21 @@ export const PROMPT_PLACEHOLDERS = ["number", "title", "url", "repo"] as const;
 
 export function renderPrompt(template: string, values: Record<(typeof PROMPT_PLACEHOLDERS)[number], string>) {
   return template.replace(/\{(number|title|url|repo)\}/g, (_match, key: keyof typeof values) => values[key]);
+}
+
+/** `selectedRepo` when the All tab is picked; no `owner/repo` looks like it. */
+export const ALL_TAB = "*";
+
+/** Most owners the All tab searches at once, which keeps the search query short. */
+export const MAX_OWNERS = 20;
+
+const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+
+/** GitHub logins from text separated by commas or spaces, deduplicated; null when one is not a login. */
+export function parseOwners(text: string): string[] | null {
+  const words = text.split(/[\s,]+/).filter(Boolean);
+  if (words.length > MAX_OWNERS || words.some((w) => !OWNER.test(w))) return null;
+  return words.filter((w, i) => words.findIndex((o) => o.toLowerCase() === w.toLowerCase()) === i);
 }
 
 export const preferences = defineSettings({
@@ -40,12 +67,15 @@ export const preferences = defineSettings({
     /** The last search, in GitHub's issue search syntax. */
     searchQuery: z.string().default(DEFAULT_QUERY),
     density: z.enum(DENSITIES).default("comfortable"),
+    sort: z.enum(SORTS).default("created-desc"),
     /** `provider/model` for "Create and start". Empty uses the first ready provider and its default model. */
     agent: z.string().default(""),
     /** Thinking option id (`low`, `high`, ...) for "Create and start". Empty, or one the model lacks, uses the model's default. */
     effort: z.string().default(""),
     /** The first message "Create and start" sends the agent. */
     agentPrompt: z.string().default(DEFAULT_AGENT_PROMPT),
+    /** GitHub organizations or users whose open issues the All tab searches; empty hides the tab. */
+    owners: z.array(z.string()).default([]),
   }),
 });
 export type Preferences = z.infer<typeof preferences.schema>;
@@ -74,9 +104,11 @@ export function effectivePreferences(values: Preferences): Preferences {
     selectedRepo: values.selectedRepo,
     searchQuery: values.searchQuery,
     density: values.density,
+    sort: values.sort,
     agent: values.agent,
     effort: values.effort,
     agentPrompt: effectiveAgentPrompt(values.agentPrompt),
+    owners: values.owners.filter((o) => OWNER.test(o)).slice(0, MAX_OWNERS),
   };
 }
 
@@ -190,6 +222,10 @@ const issue = z.object({
   workspace: z.object({ id: z.string(), name: z.string() }).nullable(),
   /** A local branch for this issue with no active workspace (e.g. the workspace was archived). */
   orphanBranch: z.string().nullable(),
+  /** `owner/repo` the issue is in. Set in the All tab, whose issues span repositories. */
+  repo: z.string().optional(),
+  /** In the All tab, this host's project on the issue's repository; null when there is none. */
+  projectId: z.string().nullable().optional(),
 });
 export type Issue = z.infer<typeof issue>;
 
@@ -206,13 +242,24 @@ const pullRequest = z.object({
 });
 export type PullRequest = z.infer<typeof pullRequest>;
 
-/** GitHub's closing PR links for the visible issues, fetched independently of the issue search. */
+const repoSlug = z.string().regex(/^[^/\s]+\/[^/\s]+$/);
+
+/**
+ * GitHub's closing PR links for the visible issues, fetched independently of the issue search.
+ * `repo` and `numbers` answer by issue number; `issues`, for the All tab's page across
+ * repositories, answers by `owner/repo#number` and leaves out repositories GitHub refuses.
+ */
 export const pullRequestsRpc = defineRpc({
   name: "issues.pull-requests",
-  input: z.object({
-    repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
-    numbers: z.array(z.number().int().positive()).max(PAGE_SIZE),
-  }),
+  input: z.union([
+    z.object({
+      repo: repoSlug,
+      numbers: z.array(z.number().int().positive()).max(PAGE_SIZE),
+    }),
+    z.object({
+      issues: z.array(z.object({ repo: repoSlug, number: z.number().int().positive() })).max(PAGE_SIZE),
+    }),
+  ]),
   output: z.object({ pullRequests: z.record(z.string(), z.array(pullRequest)) }),
 });
 
@@ -241,28 +288,41 @@ export const projectsRpc = defineRpc({
   }),
 });
 
-/** One page of open issues in one repository, newest first. */
+const owners = z.array(z.string().regex(OWNER)).min(1).max(MAX_OWNERS);
+
+/** One page of open issues in one repository, or across owners for the All tab, in the chosen order. */
 export const issuesPageRpc = defineRpc({
   name: "issues.page",
-  /** `projectId` for this host's projects; `repo` for a repository only another host has. */
+  /**
+   * `projectId` for this host's projects; `repo` for a repository only another host has; `owners`
+   * for every repository of those GitHub organizations and users.
+   */
   input: z
     .object({
       projectId: z.string().optional(),
       repo: z.string().optional(),
+      owners: owners.optional(),
       /** GitHub's issue search syntax; `is:issue state:open` is implied. */
       query: z.string().max(1000),
       page: z.number().int().min(1),
+      sort: z.enum(SORTS).default("created-desc"),
     })
-    .refine((v) => Boolean(v.projectId) !== Boolean(v.repo), "Pass exactly one of projectId and repo"),
+    .refine(
+      (v) => [v.projectId, v.repo, v.owners].filter(Boolean).length === 1,
+      "Pass exactly one of projectId, repo and owners",
+    ),
   output: z.object({ issues: z.array(issue), totalCount: z.number() }),
 });
 
 const named = z.object({ name: z.string(), color: z.string(), description: z.string().nullable() });
 
-/** What the filter menus offer for one repository. */
+/**
+ * What the filter menus offer for one repository. For `owners` only the signed-in user and the
+ * organizations' issue types are known; the screen takes labels from the issues it shows.
+ */
 export const filterOptionsRpc = defineRpc({
   name: "issues.filter-options",
-  input: z.object({ repo: z.string() }),
+  input: z.union([z.object({ repo: repoSlug }), z.object({ owners })]),
   output: z.object({
     /** The signed-in GitHub login, which `@me` stands for. */
     me: z.string().nullable(),
@@ -275,10 +335,13 @@ export const filterOptionsRpc = defineRpc({
   }),
 });
 
-/** Open issues assigned to me per repository, for the project tabs; repositories GitHub refuses are left out. */
+/**
+ * Open issues assigned to me per repository, for the project tabs, and across `owners` under
+ * `ALL_TAB` for the All tab; repositories GitHub refuses are left out.
+ */
 export const assignedCountsRpc = defineRpc({
   name: "issues.assigned-counts",
-  input: z.object({ repos: z.array(z.string()).max(50) }),
+  input: z.object({ repos: z.array(z.string()).max(50), owners: owners.optional() }),
   output: z.object({ counts: z.record(z.string(), z.number()) }),
 });
 

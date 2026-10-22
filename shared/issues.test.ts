@@ -12,7 +12,9 @@ import {
   DEFAULT_QUERY,
   effectivePreferences,
   issueMatcher,
+  issuesPageRpc,
   MAX_RESULTS,
+  parseOwners,
   PAGE_SIZE,
   pageCountFor,
   parseGitHubRemote,
@@ -99,9 +101,11 @@ describe("preferences", () => {
       selectedRepo: "",
       searchQuery: DEFAULT_QUERY,
       density: "comfortable",
+      sort: "created-desc",
       agent: "",
       effort: "",
       agentPrompt: DEFAULT_AGENT_PROMPT,
+      owners: [],
     });
     expect(DEFAULT_PREFERENCES).toEqual(preferences.schema.parse({}));
   });
@@ -128,9 +132,49 @@ describe("effectivePreferences", () => {
     expect(effectivePreferences(values)).toEqual(values);
   });
 
+  it("drops owners that are not GitHub logins", () => {
+    const values = { ...DEFAULT_PREFERENCES, owners: ["Klartika", "bad owner", "-x", "octo-org"] };
+    expect(effectivePreferences(values).owners).toEqual(["Klartika", "octo-org"]);
+  });
+
   it("falls back to defaults for values that would break creating", () => {
     const values = { ...DEFAULT_PREFERENCES, branchPrefix: "-bad", agentPrompt: "   " };
     expect(effectivePreferences(values)).toMatchObject({ branchPrefix: "issue/", agentPrompt: DEFAULT_AGENT_PROMPT });
+  });
+});
+
+describe("parseOwners", () => {
+  it("splits on commas and spaces, dropping repeats in any case", () => {
+    expect(parseOwners(" Klartika, Elegia-io  portico-ch,klartika ")).toEqual(["Klartika", "Elegia-io", "portico-ch"]);
+  });
+
+  it("is empty for empty text", () => {
+    expect(parseOwners("  , ")).toEqual([]);
+  });
+
+  it.each(["octo/repo", "-octo", "octo-", "a_b", "@me"])("rejects %j", (text) => {
+    expect(parseOwners(`ok, ${text}`)).toBeNull();
+  });
+
+  it("rejects more than 20 owners", () => {
+    expect(parseOwners(Array.from({ length: 21 }, (_, i) => `o${i}`).join(","))).toBeNull();
+  });
+});
+
+describe("issuesPageRpc input", () => {
+  const parse = (input: object) => issuesPageRpc.input.safeParse({ query: "", page: 1, ...input }).success;
+
+  it("takes exactly one of projectId, repo and owners", () => {
+    expect(parse({ projectId: "p" })).toBe(true);
+    expect(parse({ repo: "o/r" })).toBe(true);
+    expect(parse({ owners: ["octo-org"] })).toBe(true);
+    expect(parse({})).toBe(false);
+    expect(parse({ projectId: "p", owners: ["octo-org"] })).toBe(false);
+  });
+
+  it("refuses owners that would change the search", () => {
+    expect(parse({ owners: ["octo-org repo:x/y"] })).toBe(false);
+    expect(parse({ owners: [] })).toBe(false);
   });
 });
 

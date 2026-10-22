@@ -236,6 +236,57 @@ describe("pullRequests", () => {
     expect(calls).toBe(2);
   });
 
+  it("asks for issues across repositories in one query, keyed by repository and number", async () => {
+    fake.gh = (args) => {
+      const { query } = searchFields(args);
+      expect(query).toContain('r0: repository(owner: "octo", name: "app") { i7: issue(number: 7)');
+      expect(query).toContain('r1: repository(owner: "cat", name: "dotfiles") { i7: issue(number: 7)');
+      return JSON.stringify({ data: { r0: { i7: connection([pr(1)]) }, r1: { i7: connection([]) } } });
+    };
+
+    const result = await mod.pullRequests({
+      issues: [
+        { repo: "octo/app", number: 7 },
+        { repo: "cat/dotfiles", number: 7 },
+        { repo: "octo/app", number: 7 },
+      ],
+    });
+
+    expect(result).toEqual({ pullRequests: { "octo/app#7": [pr(1)], "cat/dotfiles#7": [] } });
+    expect(ghCalls("api graphql")).toHaveLength(1);
+  });
+
+  it("leaves out a repository GitHub refuses, keeping the others", async () => {
+    // gh exits non-zero on any GraphQL error, with GitHub's answer on stdout.
+    fake.gh = () =>
+      Object.assign(ghError("gh: Could not resolve to a Repository"), {
+        stdout: JSON.stringify({
+          data: { r0: { i7: connection([pr(1)]) }, r1: null },
+          errors: [{ message: "Could not resolve to a Repository with the name 'cat/gone'." }],
+        }),
+      });
+
+    const result = await mod.pullRequests({
+      issues: [
+        { repo: "octo/app", number: 7 },
+        { repo: "cat/gone", number: 3 },
+      ],
+    });
+
+    expect(result).toEqual({ pullRequests: { "octo/app#7": [pr(1)] } });
+  });
+
+  it("fails across repositories only when nothing could be loaded", async () => {
+    fake.gh = () =>
+      Object.assign(ghError("gh: SAML"), {
+        stdout: JSON.stringify({ data: { r0: null }, errors: [{ message: "Resource protected by SAML enforcement" }] }),
+      });
+    await expect(mod.pullRequests({ issues: [{ repo: "octo/app", number: 7 }] })).rejects.toThrow("SAML enforcement");
+
+    fake.gh = () => ghError("API rate limit exceeded");
+    await expect(mod.pullRequests({ issues: [{ repo: "octo/app", number: 7 }] })).rejects.toThrow("API rate limit exceeded");
+  });
+
   it("makes no GitHub call for an empty page", async () => {
     expect(await mod.pullRequests({ repo: "octo/repo", numbers: [] })).toEqual({ pullRequests: {} });
     expect(fake.calls).toEqual([]);
@@ -363,6 +414,15 @@ describe("issuesPage: searching", () => {
         page: "1",
       },
     ]);
+  });
+
+  it("asks GitHub for the chosen order", async () => {
+    const { api } = await oneProject();
+
+    await mod.issuesPage(api, prefs(), { projectId: "p1", query: "", page: 1, sort: "updated-asc" });
+    await mod.issuesPage(api, prefs(), { projectId: "p1", query: "", page: 1, sort: "reactions-desc" });
+
+    expect(searches().map(({ sort, order }) => `${sort} ${order}`)).toEqual(["updated asc", "reactions desc"]);
   });
 
   it("searches every open issue for an empty query", async () => {
@@ -835,6 +895,100 @@ describe("issuesPage for another host's repository", () => {
   });
 });
 
+describe("issuesPage across owners, for the All tab", () => {
+  const inRepo = (repo: string, number: number) =>
+    issue(number, {
+      html_url: `https://github.com/${repo}/issues/${number}`,
+      repository_url: `https://api.github.com/repos/${repo}`,
+    });
+
+  /** Answers every search with `items`, as GitHub would for the owners asked. */
+  function ownersSearch(items: unknown[]) {
+    return (args: string[]): GhReply => {
+      if (!args.join(" ").startsWith("api --method GET search/issues")) throw new Error(`unexpected gh ${args.join(" ")}`);
+      return JSON.stringify({ total_count: 1234, items });
+    };
+  }
+
+  it("asks again when GitHub's search times out with nothing, then says so instead of showing no issues", async () => {
+    let answers = 0;
+    fake.gh = () => JSON.stringify({ total_count: 0, incomplete_results: true, items: [], n: ++answers });
+    const { api } = fakePaseo({ projects: [] });
+
+    await expect(mod.issuesPage(api, prefs(), { owners: ["octo-org"], query: "", page: 1 })).rejects.toThrow(
+      "GitHub's search timed out",
+    );
+    expect(searches()).toHaveLength(2);
+
+    // A retry that answers is used; partial results that have issues are shown as they are.
+    fake.calls = [];
+    fake.gh = () =>
+      ++answers % 2
+        ? JSON.stringify({ total_count: 0, incomplete_results: true, items: [] })
+        : JSON.stringify({ total_count: 40, incomplete_results: true, items: [inRepo("octo-org/app", 3)] });
+    const result = await mod.issuesPage(api, prefs(), { owners: ["octo-org"], query: "", page: 1 });
+    expect(result.totalCount).toBe(40);
+    expect(searches()).toHaveLength(2);
+  });
+
+  it("searches every owner at once, in the chosen order", async () => {
+    fake.gh = ownersSearch([]);
+    const { api } = fakePaseo({ projects: [] });
+    const listProjects = vi.spyOn(api.projects, "list");
+
+    await mod.issuesPage(api, prefs(), {
+      owners: ["octo-org", "octocat"],
+      query: " label:bug ",
+      page: 3,
+      sort: "comments-desc",
+    });
+
+    expect(searches()).toEqual([
+      {
+        q: "user:octo-org user:octocat is:issue state:open label:bug",
+        sort: "comments",
+        order: "desc",
+        per_page: "25",
+        page: "3",
+      },
+    ]);
+    // An empty page needs no coverage.
+    expect(listProjects).not.toHaveBeenCalled();
+  });
+
+  it("names each issue's repository and this host's project on it, keeping GitHub's order", async () => {
+    const main = await gitRepo({ origin: "git@github.com:octo-org/App.git" });
+    fake.gh = ownersSearch([inRepo("octo-org/app", 7), inRepo("octocat/dotfiles", 7), inRepo("octo-org/app", 2)]);
+    const { api } = fakePaseo({ projects: [{ id: "p-app", name: "app", root: main }] });
+
+    const result = await mod.issuesPage(api, prefs(), { owners: ["octo-org", "octocat"], query: "", page: 1 });
+
+    expect(result.totalCount).toBe(1234);
+    expect(result.issues.map((i) => [i.repo, i.number, i.projectId])).toEqual([
+      ["octo-org/app", 7, "p-app"],
+      ["octocat/dotfiles", 7, null],
+      ["octo-org/app", 2, "p-app"],
+    ]);
+  });
+
+  it("marks coverage only from the project on the issue's own repository", async () => {
+    const main = await gitRepo({ origin: "git@github.com:octo-org/app.git" }, ["issue/2-old"]);
+    fake.gh = ownersSearch([inRepo("octo-org/app", 7), inRepo("octocat/dotfiles", 7), inRepo("octo-org/app", 2)]);
+    const { api } = fakePaseo({
+      projects: [{ id: "p-app", name: "app", root: main }],
+      workspaces: [{ id: "w7", title: "#7 Fix it", projectId: "p-app" }],
+    });
+
+    const { issues } = await mod.issuesPage(api, prefs(), { owners: ["octo-org"], query: "", page: 1 });
+
+    expect(issues.map((i) => [i.workspace?.id ?? null, i.orphanBranch])).toEqual([
+      ["w7", null],
+      [null, null],
+      [null, "issue/2-old"],
+    ]);
+  });
+});
+
 describe("issueDetails", () => {
   it("returns what creating on another host needs", async () => {
     fake.gh = creationGh({ title: "Crash", defaultBranch: "develop" });
@@ -939,6 +1093,38 @@ describe("filterOptions", () => {
     fake.ghInstalled = false;
     await expect(mod.filterOptions({ repo: "octo/repo" })).rejects.toThrow("is not installed");
   });
+
+  it("offers you and the owners' issue types across owners, with no per-repository lists", async () => {
+    fake.gh = (args) => {
+      const line = args.join(" ");
+      if (line.startsWith("api user")) return '{"login":"ajma","avatarUrl":"a.png"}\n';
+      if (line.startsWith("api graphql") && args.includes("login=octocat")) {
+        return ghError("Could not resolve to an Organization with the login of 'octocat'.");
+      }
+      if (line.startsWith("api graphql")) {
+        return '{"name":"Bug","color":"RED","description":null}\n{"name":"Task","color":"YELLOW","description":null}\n';
+      }
+      throw new Error(`unexpected gh ${line}`);
+    };
+
+    expect(await mod.filterOptions({ owners: ["octo-org", "octocat", "other-org"] })).toEqual({
+      me: "ajma",
+      labels: [],
+      milestones: [],
+      users: [{ login: "ajma", avatarUrl: "a.png" }],
+      types: [
+        { name: "Bug", color: "RED", description: null },
+        { name: "Task", color: "YELLOW", description: null },
+      ],
+    });
+    // As a string field (-f): gh's -F would send an all-digit login as a number.
+    const logins = ghCalls("api graphql").map((c) => c.args.slice(c.args.findIndex((a) => a.startsWith("login=")) - 1));
+    expect(logins.map(([flag, login]) => `${flag} ${login}`)).toEqual([
+      "-f login=octo-org",
+      "-f login=octocat",
+      "-f login=other-org",
+    ]);
+  });
 });
 
 describe("assignedCounts", () => {
@@ -958,6 +1144,17 @@ describe("assignedCounts", () => {
     expect(fields.q1).toBe("repo:octo/b is:issue is:open assignee:@me");
     expect(fields.query).toContain("r0: search(query: $q0, type: ISSUE, first: 0)");
     expect(fields.query).not.toContain("octo/");
+  });
+
+  it("counts across the All tab's owners in the same request, under *", async () => {
+    fake.gh = () => JSON.stringify({ data: { r0: { issueCount: 9 }, r1: { issueCount: 33 } } });
+
+    const result = await mod.assignedCounts({ repos: ["octo/a"], owners: ["octo-org", "octocat"] });
+
+    expect(result).toEqual({ counts: { "octo/a": 9, "*": 33 } });
+    const fields = searchFields(ghCalls("api graphql")[0].args);
+    expect(fields.q1).toBe("user:octo-org user:octocat is:issue is:open assignee:@me");
+    expect(ghCalls("api graphql")).toHaveLength(1);
   });
 
   it("makes no request without repositories", async () => {

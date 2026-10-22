@@ -1,6 +1,7 @@
 import { execCommand, type PluginHandlerContext } from "@getpaseo/plugin/server";
 import { paseoHome, projectIcon } from "./project-icons";
 import {
+  ALL_TAB,
   branchName,
   defaultAgent,
   issueMatcher,
@@ -13,6 +14,7 @@ import {
   type Issue,
   type Preferences,
   type PullRequest,
+  type Sort,
 } from "../shared/issues";
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -204,21 +206,33 @@ type SearchItem = {
   labels: { name: string; color: string }[];
   user: { login: string } | null;
   created_at: string;
+  /** `https://api.github.com/repos/<owner>/<repo>` */
+  repository_url: string;
 };
 
+/** `owner/repo` of a search result. */
+const itemRepo = (item: SearchItem) => item.repository_url.split("/").slice(-2).join("/");
+
 /**
- * One page of open issues in `repo` matching `query`, newest first, the way github.com lists
- * them. Uses the search API, which allows 30 searches a minute and 1,000 results per search.
+ * One page of open issues in `scope` (`repo:o/r`, or `user:a user:b`, which GitHub ORs) matching
+ * `query`, in `sort` order, the way github.com lists them. Uses the search API, which allows 30
+ * searches a minute and 1,000 results per search.
  */
-async function searchPage(repo: string, query: string, page: number) {
-  const { stdout } = await gh([
-    "api", "--method", "GET", "search/issues",
-    "-f", `q=repo:${repo} is:issue state:open ${query}`.trim(),
-    "-f", "sort=created", "-f", "order=desc",
-    "-F", `per_page=${PAGE_SIZE}`, "-F", `page=${page}`,
-  ]);
-  const result = JSON.parse(stdout) as { total_count: number; items: SearchItem[] };
-  return { totalCount: result.total_count, items: result.items };
+async function searchPage(scope: string, query: string, page: number, sort: Sort) {
+  const [field, order] = sort.split("-");
+  // A search that times out on GitHub's side comes back as zero results marked incomplete; searches
+  // across several owners do now and then. Ask once more, then say so rather than show no issues.
+  for (let attempt = 1; ; attempt++) {
+    const { stdout } = await gh([
+      "api", "--method", "GET", "search/issues",
+      "-f", `q=${scope} is:issue state:open ${query}`.trim(),
+      "-f", `sort=${field}`, "-f", `order=${order}`,
+      "-F", `per_page=${PAGE_SIZE}`, "-F", `page=${page}`,
+    ]);
+    const result = JSON.parse(stdout) as { total_count: number; incomplete_results?: boolean; items: SearchItem[] };
+    if (!result.incomplete_results || result.items.length) return { totalCount: result.total_count, items: result.items };
+    if (attempt === 2) throw new Error("GitHub's search timed out before finding any issues. Refresh to try again.");
+  }
 }
 
 /** What coverage needs to know about one repository: its workspaces and local branches. */
@@ -268,19 +282,48 @@ export async function projectList(paseo: PaseoApi) {
 /** No local checkout: coverage for these issues is worked out from the other host's workspaces. */
 const NO_COVERAGE = { workspaces: [] as Workspace[], branches: [] as string[] };
 
-/** Batch the visible issues, then follow any remaining PR connection pages. */
-export async function pullRequests(input: { repo: string; numbers: number[] }) {
-  const { repo, numbers } = pullRequestsRpc.input.parse(input);
-  const result: Record<string, PullRequest[]> = {};
-  let pending = [...new Set(numbers)].map((number) => ({ number, after: null as string | null }));
-  const [owner, name] = repo.split("/");
-  while (pending.length) {
-    const fields = pending.map(({ number, after }) => `i${number}: issue(number: ${number}) {
+/** An issue's closing PRs from `after`, as a GraphQL field named `i<number>`. */
+const closingPullRequestsField = (number: number, after: string | null) => `i${number}: issue(number: ${number}) {
       closedByPullRequestsReferences(first: 100, includeClosedPrs: true, after: ${JSON.stringify(after)}) {
         nodes { number title url state isDraft reviewDecision mergeable mergeStateStatus isInMergeQueue }
         pageInfo { hasNextPage endCursor }
       }
-    }`);
+    }`;
+
+type Connection = {
+  nodes: (PullRequest | null)[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+};
+type IssueFields = Record<string, { closedByPullRequestsReferences: Connection | null } | null>;
+
+/** Adds a connection page's PRs to `prs`; returns the cursor of the next page, or null. */
+function collect(prs: PullRequest[], connection: Connection, after: string | null) {
+  for (const pr of connection.nodes) {
+    if (pr && !prs.some((existing) => existing.url === pr.url)) prs.push(pr);
+  }
+  if (!connection.pageInfo.hasNextPage) return null;
+  const cursor = connection.pageInfo.endCursor;
+  if (!cursor || cursor === after) throw new Error("Could not load the next page of pull requests");
+  return cursor;
+}
+
+/** Active PRs first; preserve GitHub's ordering within each state. */
+function byState(result: Record<string, PullRequest[]>) {
+  const rank = { OPEN: 0, MERGED: 1, CLOSED: 2 };
+  for (const prs of Object.values(result)) prs.sort((a, b) => rank[a.state] - rank[b.state]);
+  return { pullRequests: result };
+}
+
+/** Batch the visible issues, then follow any remaining PR connection pages. */
+export async function pullRequests(input: { repo: string; numbers: number[] } | { issues: { repo: string; number: number }[] }) {
+  const parsed = pullRequestsRpc.input.parse(input);
+  if ("issues" in parsed) return pullRequestsAcross(parsed.issues);
+  const { repo, numbers } = parsed;
+  const result: Record<string, PullRequest[]> = {};
+  let pending = [...new Set(numbers)].map((number) => ({ number, after: null as string | null }));
+  const [owner, name] = repo.split("/");
+  while (pending.length) {
+    const fields = pending.map(({ number, after }) => closingPullRequestsField(number, after));
     let stdout: string;
     try {
       ({ stdout } = await gh([
@@ -291,12 +334,8 @@ export async function pullRequests(input: { repo: string; numbers: number[] }) {
     } catch (error) {
       throw new Error(errorText(error));
     }
-    type Connection = {
-      nodes: (PullRequest | null)[];
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    };
     const response = JSON.parse(stdout) as {
-      data?: { repository: Record<string, { closedByPullRequestsReferences: Connection | null } | null> | null };
+      data?: { repository: IssueFields | null };
       errors?: { message: string }[];
     };
     // Partial GraphQL failures must not masquerade as issues with no linked PRs.
@@ -306,22 +345,58 @@ export async function pullRequests(input: { repo: string; numbers: number[] }) {
     for (const { number, after } of pending) {
       const connection = response.data.repository[`i${number}`]?.closedByPullRequestsReferences;
       if (!connection) throw new Error(`Could not load pull requests for ${repo}#${number}`);
-      const prs = result[number] ??= [];
-      for (const pr of connection.nodes) {
-        if (pr && !prs.some((existing) => existing.url === pr.url)) prs.push(pr);
-      }
-      if (connection.pageInfo.hasNextPage) {
-        const cursor = connection.pageInfo.endCursor;
-        if (!cursor || cursor === after) throw new Error("Could not load the next page of pull requests");
-        next.push({ number, after: cursor });
-      }
+      const cursor = collect((result[number] ??= []), connection, after);
+      if (cursor) next.push({ number, after: cursor });
     }
     pending = next;
   }
-  // Active PRs first; preserve GitHub's ordering within each state.
-  const rank = { OPEN: 0, MERGED: 1, CLOSED: 2 };
-  for (const prs of Object.values(result)) prs.sort((a, b) => rank[a.state] - rank[b.state]);
-  return { pullRequests: result };
+  return byState(result);
+}
+
+/**
+ * The All tab's PRs: one query per round for every repository on the page. An issue whose
+ * repository or issue GitHub refuses is left out rather than shown with no PRs; only a page
+ * where nothing could be loaded is an error.
+ */
+async function pullRequestsAcross(issues: { repo: string; number: number }[]) {
+  const result: Record<string, PullRequest[]> = {};
+  const unique = new Map(issues.map((issue) => [`${issue.repo}#${issue.number}`, issue]));
+  let pending = [...unique.values()].map((issue) => ({ ...issue, after: null as string | null }));
+  let firstRound = true;
+  while (pending.length) {
+    const repos = [...new Set(pending.map((p) => p.repo))];
+    const fields = repos.map((repo, r) => {
+      const [owner, name] = repo.split("/");
+      const issueFields = pending.filter((p) => p.repo === repo).map((p) => closingPullRequestsField(p.number, p.after));
+      return `r${r}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${issueFields.join(" ")} }`;
+    });
+    let stdout: string;
+    try {
+      ({ stdout } = await gh(["api", "graphql", "-f", `query={${fields.join(" ")}}`]));
+    } catch (error) {
+      // gh exits non-zero when any part fails, but still prints what GitHub returned.
+      const out = (error as { stdout?: unknown }).stdout;
+      if (typeof out !== "string" || !out.trim().startsWith("{")) throw new Error(errorText(error));
+      stdout = out;
+    }
+    const response = JSON.parse(stdout) as {
+      data?: Record<string, IssueFields | null> | null;
+      errors?: { message: string }[];
+    };
+    const next: typeof pending = [];
+    for (const p of pending) {
+      const connection = response.data?.[`r${repos.indexOf(p.repo)}`]?.[`i${p.number}`]?.closedByPullRequestsReferences;
+      if (!connection) continue;
+      const cursor = collect((result[`${p.repo}#${p.number}`] ??= []), connection, p.after);
+      if (cursor) next.push({ ...p, after: cursor });
+    }
+    if (firstRound && pending.length && !Object.keys(result).length) {
+      throw new Error(response.errors?.map((e) => e.message).join("; ") || "Could not load pull requests");
+    }
+    firstRound = false;
+    pending = next;
+  }
+  return byState(result);
 }
 
 /**
@@ -331,23 +406,63 @@ export async function pullRequests(input: { repo: string; numbers: number[] }) {
 export async function issuesPage(
   paseo: PaseoApi,
   prefs: Preferences,
-  { projectId, repo, query, page }: { projectId?: string; repo?: string; query: string; page: number },
+  {
+    projectId,
+    repo,
+    owners,
+    query,
+    page,
+    sort = "created-desc",
+  }: { projectId?: string; repo?: string; owners?: string[]; query: string; page: number; sort?: Sort },
 ) {
   await findGh();
-  const search = (slug: string) =>
-    searchPage(slug, normalizeQuery(query), page).catch((error: unknown) => {
+  const search = (scope: string) =>
+    searchPage(scope, normalizeQuery(query), page, sort).catch((error: unknown) => {
       const text = errorText(error);
       throw new Error(SIGNED_OUT.test(text) ? "GitHub CLI is not signed in on this host. Run `gh auth login`." : text);
     });
   if (repo) {
-    const result = await search(repo);
+    const result = await search(`repo:${repo}`);
     return { issues: toIssues(result.items, prefs.branchPrefix, NO_COVERAGE), totalCount: result.totalCount };
   }
+  if (owners?.length) return ownersPage(paseo, prefs, await search(owners.map((o) => `user:${o}`).join(" ")));
   const { repos } = await githubRepos(await listProjects(paseo));
   const r = [...repos.values()].find((candidate) => candidate.projectIds.has(projectId ?? ""));
   if (!r) throw new Error("That project is no longer in Paseo, or no longer has a github.com remote");
-  const [result, context] = await Promise.all([search(r.repo), coverageContext(paseo, r)]);
+  const [result, context] = await Promise.all([search(`repo:${r.repo}`), coverageContext(paseo, r)]);
   return { issues: toIssues(result.items, prefs.branchPrefix, context), totalCount: result.totalCount };
+}
+
+/**
+ * The All tab's page: issues from many repositories, each marked with its repository and, when
+ * this host has a project on it, that project and its coverage.
+ */
+async function ownersPage(
+  paseo: PaseoApi,
+  prefs: Preferences,
+  result: { totalCount: number; items: SearchItem[] },
+) {
+  // Nothing to cover: skip listing projects and running git in each.
+  if (!result.items.length) return { issues: [], totalCount: result.totalCount };
+  const [{ repos }, workspaces] = await Promise.all([
+    listProjects(paseo).then(githubRepos),
+    listWorkspaces(paseo),
+  ]);
+  const keys = [...new Set(result.items.map((item) => itemRepo(item).toLowerCase()))];
+  const contexts = new Map(
+    await Promise.all(
+      keys.map(async (key) => {
+        const local = repos.get(key);
+        return [key, { local, context: local ? await coverageContext(paseo, local, workspaces) : NO_COVERAGE }] as const;
+      }),
+    ),
+  );
+  const issues = result.items.map((item) => {
+    const { local, context } = contexts.get(itemRepo(item).toLowerCase())!;
+    const [issue] = toIssues([item], prefs.branchPrefix, context);
+    return { ...issue, repo: itemRepo(item), projectId: local?.primary.id ?? null };
+  });
+  return { issues, totalCount: result.totalCount };
 }
 
 /** Title, state, link and default branch for creating a workspace for issue `number` on another host. */
@@ -460,8 +575,10 @@ const jsonLines = <T>(stdout: string): T[] =>
 type Named = { name: string; color: string; description: string | null };
 
 /** Labels, milestones, people and issue types for the filter menus. A part that fails is left empty. */
-export async function filterOptions({ repo }: { repo: string }) {
+export async function filterOptions(input: { repo: string } | { owners: string[] }) {
   await findGh();
+  if ("owners" in input) return ownerFilterOptions(input.owners);
+  const { repo } = input;
   const [owner, name] = repo.split("/");
   const [me, labels, milestones, users, types] = await Promise.all([
     settle(gh(["api", "user", "--jq", ".login"]).then((r) => r.stdout.trim() || null)),
@@ -486,7 +603,8 @@ export async function filterOptions({ repo }: { repo: string }) {
       gh([
         "api", "graphql",
         "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issueTypes(first:50){nodes{name color description isEnabled}}}}",
-        "-F", `owner=${owner}`, "-F", `name=${name}`,
+        // -f, not -F: -F reads a value starting with @ from a file and turns digits into numbers.
+        "-f", `owner=${owner}`, "-f", `name=${name}`,
         "--jq", ".data.repository.issueTypes.nodes // [] | .[] | select(.isEnabled) | {name, color, description}",
       ]).then((r) => jsonLines<Named>(r.stdout)),
     ),
@@ -506,21 +624,62 @@ export async function filterOptions({ repo }: { repo: string }) {
 }
 
 /**
- * Open issues assigned to me in each repository, in one GraphQL request. GraphQL search has
- * its own budget, so these counts don't use the REST search's 30 a minute. Failure gives no counts.
+ * The All tab's menus: you, and the issue types of the owners that are organizations. Labels,
+ * milestones and assignable people belong to each repository, so they are not fetched.
  */
-export async function assignedCounts({ repos }: { repos: string[] }) {
-  if (!repos.length) return { counts: {} as Record<string, number> };
-  const fields = repos.map((_, i) => `r${i}: search(query: $q${i}, type: ISSUE, first: 0) { issueCount }`);
-  const query = `query(${repos.map((_, i) => `$q${i}: String!`).join(", ")}) { ${fields.join(" ")} }`;
+async function ownerFilterOptions(owners: string[]) {
+  const [me, types] = await Promise.all([
+    settle(
+      gh(["api", "user", "--jq", "{login, avatarUrl: .avatar_url}"]).then(
+        (r) => JSON.parse(r.stdout) as { login: string; avatarUrl: string | null },
+      ),
+    ),
+    // A user account has no issue types; its lookup fails and adds none.
+    Promise.all(
+      owners.map((owner) =>
+        settle(
+          gh([
+            "api", "graphql",
+            "-f", "query=query($login:String!){organization(login:$login){issueTypes(first:50){nodes{name color description isEnabled}}}}",
+            "-f", `login=${owner}`,
+            "--jq", ".data.organization.issueTypes.nodes // [] | .[] | select(.isEnabled) | {name, color, description}",
+          ]).then((r) => jsonLines<Named>(r.stdout)),
+        ),
+      ),
+    ),
+  ]);
+  const unique = new Map<string, Named>();
+  for (const t of types.flatMap((result) => result.value ?? [])) {
+    if (!unique.has(t.name.toLowerCase())) unique.set(t.name.toLowerCase(), t);
+  }
+  return {
+    me: me.value?.login ?? null,
+    labels: [],
+    milestones: [],
+    users: me.value ? [me.value] : [],
+    types: [...unique.values()],
+  };
+}
+
+/**
+ * Open issues assigned to me in each repository, and across `owners` for the All tab under
+ * `ALL_TAB`, in one GraphQL request. GraphQL search has its own budget, so these counts don't use
+ * the REST search's 30 a minute. Failure gives no counts.
+ */
+export async function assignedCounts({ repos, owners = [] }: { repos: string[]; owners?: string[] }) {
+  const scopes = repos.map((repo) => [repo, `repo:${repo}`]);
+  if (owners.length) scopes.push([ALL_TAB, owners.map((o) => `user:${o}`).join(" ")]);
+  if (!scopes.length) return { counts: {} as Record<string, number> };
+  const fields = scopes.map((_, i) => `r${i}: search(query: $q${i}, type: ISSUE, first: 0) { issueCount }`);
+  const query = `query(${scopes.map((_, i) => `$q${i}: String!`).join(", ")}) { ${fields.join(" ")} }`;
   const args = ["api", "graphql", "-f", `query=${query}`];
-  repos.forEach((repo, i) => args.push("-f", `q${i}=repo:${repo} is:issue is:open assignee:@me`));
+  scopes.forEach(([, scope], i) => args.push("-f", `q${i}=${scope} is:issue is:open assignee:@me`));
   try {
     const { data } = JSON.parse((await gh(args)).stdout) as { data: Record<string, { issueCount: number } | null> };
     const counts: Record<string, number> = {};
-    repos.forEach((repo, i) => {
+    scopes.forEach(([key], i) => {
       const count = data?.[`r${i}`]?.issueCount;
-      if (typeof count === "number") counts[repo] = count;
+      if (typeof count === "number") counts[key] = count;
     });
     return { counts };
   } catch (error) {

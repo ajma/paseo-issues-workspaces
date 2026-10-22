@@ -2,17 +2,23 @@ Issues Workspaces lists a project's open GitHub issues, laid out like GitHub's i
 
 ## The screen
 
-When you have more than one GitHub project, a row of tabs at the top picks the one to show, each with the project's icon from Paseo and the number of its open issues assigned to you. Below it are the search box and that project's issues, newest first, 25 to a page with GitHub's pager. Each page is fetched from GitHub when you open it.
+When you have more than one GitHub project, or an All tab, a row of tabs at the top picks the one to show, each with the project's icon from Paseo and the number of its open issues assigned to you. Below it are the search box and that project's issues, newest first unless you pick another order, 25 to a page with GitHub's pager. Each page is fetched from GitHub when you open it.
 
 The search box takes GitHub's issue search syntax and starts with `assignee:@me`. `is:issue state:open` is always part of the search, so only open issues appear. Try `label:bug`, `author:octocat`, `no:assignee`, or `NOT iOS in:title` to leave out issues with a word in the title; clearing the box lists every open issue.
 
-As on github.com, the table's header shows the open count and the Author, Labels, Milestones, Assignees and Types menus, filled from the project's repository. Picking an entry edits the search, so the box always shows what is applied. The header also switches between a comfortable and a compact density.
+As on github.com, the table's header shows the open count and the Author, Labels, Milestones, Assignees and Types menus, filled from the project's repository. Picking an entry edits the search, so the box always shows what is applied. The sort menu after them orders the issues as GitHub does: newest, oldest, recently updated, least recently updated, most commented or most reactions. The header also switches between a comfortable and a compact density.
 
 Each issue shows GitHub's label colors and a **Create workspace** button, or **Open workspace** when a workspace already covers it. As with GitHub's split buttons, the arrow beside **Create workspace** picks what the button does: **Create workspace** or **Create and start an agent**. Both actions open the new workspace after creation succeeds. Tapping an issue's title opens it on GitHub.
 
 On wide screens, issues, pull requests, and workspace actions occupy separate columns. The PR column shows one PR's review and merge status, prioritizing open PRs with requested changes or merge conflicts. An additional-PR count opens the complete list in a popover, so extra PRs do not make the row taller. Selecting the status also opens the details; selecting a PR number opens GitHub. Narrow screens stack the columns and use a sheet for PR details, as do native clients. Draft, merged, and closed PRs are identified, as are PRs waiting in a merge queue.
 
 Links come from closing references such as `Closes #2` in a PR description or manual links in GitHub's Development section; branch names and plain issue mentions alone do not count. PR status loads separately so an unavailable lookup does not block the issue list or workspace actions. It refreshes every minute while the table is active, and with the Refresh button.
+
+## The All tab
+
+List GitHub organizations or users under **Owners** in the settings, and an **All** tab appears before the project tabs, with the number of those owners' open issues assigned to you. It searches the open issues of every repository those owners have, in one search, with the same search box, sort order and paging. Each issue names its repository. An issue in a repository that is one of this host's projects gets **Create workspace** in that project, or **Open workspace** when one covers it, and none while a leftover local branch exists, as in the project tabs; any other issue gets **Open on GitHub** instead. When GitHub's search times out before finding anything, which searches across several owners occasionally do, the plugin asks once more and then says so, rather than showing no issues. Pull request status for the page loads in one request across its repositories; a repository GitHub refuses shows none, and the others still do.
+
+Labels, milestones and assignable people belong to each repository, so the All tab does not fetch them for every repository. Its Labels menu offers the labels on the issues shown, plus any already in the search; the Author and Assignees menus offer you and take any login you type; the Types menu offers the owners' organization issue types; and there is no Milestones menu. Leave **Owners** empty to hide the tab.
 
 ## How it finds projects
 
@@ -37,9 +43,10 @@ Open the settings with the gear button next to the search box, the **Issues Work
 - **Branch prefix**: the start of new branch names. Defaults to `issue/`.
 - **Agent**: the provider and model that **Create and start an agent** starts. Automatic uses the first ready provider and its default model.
 - **Effort**: how hard that agent thinks, from the levels the chosen model offers, such as low, medium or high. Model default uses the model's own default, as does a level the model does not offer.
+- **Owners**: GitHub organizations or users, separated by commas, whose open issues the All tab lists. Empty hides the tab.
 - **Agent prompt**: the agent's first message. `{number}`, `{title}`, `{url}` and `{repo}` are filled in from the issue. The default asks the agent to read the issue with `gh`, fix the root cause with tests if it reports a bug or otherwise do what it asks, and summarize the change.
 
-The selected project, search and density are saved with these settings. Settings are stored on each host and shared by every client connected to it.
+The selected project, search, sort order and density are saved with these settings. Settings are stored on each host and shared by every client connected to it.
 
 ## Access and limits
 
@@ -47,4 +54,4 @@ The plugin runs `gh` and `git` on the daemon host as the signed-in user. It read
 
 **Create and start an agent** puts the issue's title and URL in the agent's first message, and the default prompt has the agent read the issue and its comments. Anyone who can open or comment on issues in the repository controls that text, so for public repositories review the agent prompt and the agent's permissions before using it.
 
-Only github.com is supported; GitHub Enterprise remotes are skipped. Issues come from GitHub's search API, which returns at most 1,000 results per search (40 pages) and allows 30 searches a minute; each page you open is one search, and a page seen in the last minute is reused.
+Only github.com is supported; GitHub Enterprise remotes are skipped. Issues come from GitHub's search API, which returns at most 1,000 results per search (40 pages) and allows 30 searches a minute; each page you open is one search, and a page seen in the last minute is reused. The All tab searches all its owners in one search, so the 1,000-result cap applies across them: narrow the search to reach older issues of busy organizations.

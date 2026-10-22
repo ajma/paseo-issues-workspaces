@@ -8,7 +8,9 @@ A [Paseo](https://paseo.sh) plugin that shows a project's open GitHub issues, la
 
 - **GitHub's issue list in Paseo.** Label colors, authors, ages, and the comfortable and compact densities, 25 issues to a page.
 - **GitHub's search syntax.** The search box starts at `assignee:@me`. The Author, Labels, Milestones, Assignees and Types menus edit the search text, so the box always shows what is applied.
+- **GitHub's sort orders.** Newest, oldest, recently updated, least recently updated, most commented or most reactions, picked from the sort menu in the table header and remembered.
 - **One tab per project.** Each tab has the project's Paseo icon and a count of the open issues assigned to you.
+- **An All tab across your organizations.** List GitHub organizations or users under **Owners** in the settings, and a first tab searches the open issues of all their repositories, naming each issue's repository, with a count of those assigned to you. Issues in a repository you have as a project get a workspace as usual; the rest link to GitHub.
 - **Create workspace** creates a worktree on a new `issue/<number>-<slug>` branch from a freshly fetched default branch, titled `#<number> <title>`.
 - **Create and start an agent** also starts an agent in the new workspace with a prompt you can edit. Pick it from the arrow beside the button, as on GitHub.
 - **Knows what you already started.** An issue with a workspace shows **Open workspace** instead, including workspaces on other connected hosts. A leftover local branch blocks a duplicate.
@@ -45,6 +47,7 @@ Open the settings with the gear next to the search box, or from **Settings → P
 | Agent | Automatic | The provider and model **Create and start an agent** uses. Automatic picks the first ready provider and its default model. |
 | Effort | Model default | How hard that agent thinks. The levels are the chosen model's; a level the model lacks uses its default. |
 | Agent prompt | Work on the issue, with tests | The agent's first message. `{number}`, `{title}`, `{url}` and `{repo}` are filled in from the issue. |
+| Owners | None | GitHub organizations or users, separated by commas, whose open issues the All tab lists. Empty hides the tab. |
 
 Settings are stored on each host and shared by every client connected to it.
 
@@ -52,7 +55,7 @@ Settings are stored on each host and shared by every client connected to it.
 
 - **Finding the repository.** A project's GitHub repository comes from its git remotes: the one picked with `gh repo set-default`, then `upstream`, then `origin`. A fork therefore shows the upstream repository's issues. Projects without a github.com remote are left out.
 - **Detecting workspaces.** An issue counts as having a workspace when a workspace title starts with `#<number>`, or its branch starts with the branch prefix and the number.
-- **GitHub access.** Issues come from GitHub's search API through `gh`, which allows 30 searches a minute and returns at most 1,000 results per search. The plugin only reads from GitHub; it never writes to it.
+- **GitHub access.** Issues come from GitHub's search API through `gh`, which allows 30 searches a minute and returns at most 1,000 results per search. The All tab searches every owner in one search (`user:<owner>` for each), so it has the same limits: across busy organizations, narrow the search to reach older issues. The plugin only reads from GitHub; it never writes to it.
 - **PR status.** GitHub's closing links (such as `Closes #2` in a PR description or a manual Development link) connect PRs to issues. PR status loads separately through GraphQL and refreshes every minute while the table is active, or when you press Refresh. Branch names and plain issue mentions alone do not establish a link.
 
 > [!NOTE]

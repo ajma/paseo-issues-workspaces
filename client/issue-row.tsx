@@ -16,6 +16,7 @@ type Props = Pick<PluginScreenProps, "theme" | "layout" | "navigation">;
  */
 export function IssueRow({
   issue,
+  showRepo = false,
   pullRequests,
   density,
   elsewhere,
@@ -34,6 +35,8 @@ export function IssueRow({
   navigation,
 }: Props & {
   issue: Issue;
+  /** Names the issue's repository, as GitHub's lists across repositories do. */
+  showRepo?: boolean;
   pullRequests?: PullRequest[];
   density: Density;
   /** Workspaces for this issue on other hosts. */
@@ -42,7 +45,8 @@ export function IssueRow({
   first: boolean;
   pending: boolean;
   busy: boolean;
-  onCreate: (action: CreateAction) => void;
+  /** Absent when no project here can hold a workspace for the issue: it links to GitHub instead. */
+  onCreate?: (action: CreateAction) => void;
   /** Names the agent "Create and start" starts. */
   agentLabel: string;
   /** The host whose workspace covers this issue, when it is not the selected host. */
@@ -83,10 +87,11 @@ export function IssueRow({
     [theme, layout.compact, first, dense],
   );
 
-  const opened = `#${issue.number} opened ${timeAgo(issue.createdAt)}${issue.author ? ` by ${issue.author}` : ""}`;
+  const opened = `${showRepo && issue.repo ? `${issue.repo} ` : ""}#${issue.number} opened ${timeAgo(issue.createdAt)}${issue.author ? ` by ${issue.author}` : ""}`;
 
   return (
-    <View testID={`issue-row-${issue.number}`} style={[s.row, menuOpen || pullRequestsOpen ? { zIndex: 7 } : null]}>
+    // Numbers repeat across the All tab's repositories, so its rows name the repository too.
+    <View testID={`issue-row-${issue.repo ? `${issue.repo}#` : ""}${issue.number}`} style={[s.row, menuOpen || pullRequestsOpen ? { zIndex: 7 } : null]}>
       <View style={s.icon}>
         <Icon name="CircleDot" size={16} color={openIssueColor(dark)} />
       </View>
@@ -212,7 +217,7 @@ function IssueAction({
   busy: boolean;
   dense: boolean;
   theme: PluginScreenProps["theme"];
-  onCreate: (action: CreateAction) => void;
+  onCreate?: (action: CreateAction) => void;
   agentLabel: string;
   menuOpen: boolean;
   onMenuOpenChange: (open: boolean) => void;
@@ -249,6 +254,19 @@ function IssueAction({
     );
   }
   if (issue.orphanBranch) return null;
+  if (!onCreate) {
+    return (
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={`Open issue ${issue.number} on GitHub, no project here for ${issue.repo ?? "its repository"}`}
+        onPress={() => void openExternalUrl(issue.url)}
+        style={[shell, pad, { alignItems: "center", gap: 6 }]}
+      >
+        <Icon name="ExternalLink" size={14} color={theme.colors.foregroundMuted} />
+        <Text style={label}>Open on GitHub</Text>
+      </Pressable>
+    );
+  }
 
   const choices = [
     {

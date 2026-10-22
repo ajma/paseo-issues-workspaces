@@ -18,6 +18,8 @@ import {
   effectiveAgentPrompt,
   effortChoices,
   DEFAULT_AGENT_PROMPT,
+  MAX_OWNERS,
+  parseOwners,
   preferences,
   PROMPT_PLACEHOLDERS,
   type Preferences,
@@ -106,12 +108,16 @@ function PreferencesForm({
   const [effort, setEffort] = useState(values.effort);
   const savedPrompt = effectiveAgentPrompt(values.agentPrompt);
   const [agentPrompt, setAgentPrompt] = useState(savedPrompt);
+  const savedOwners = values.owners.join(", ");
+  const [ownersText, setOwnersText] = useState(savedOwners);
+  const owners = parseOwners(ownersText);
   const prefixError = branchPrefixError(branchPrefix);
   const changed =
     branchPrefix !== values.branchPrefix ||
     agent !== values.agent ||
     effort !== values.effort ||
-    agentPrompt !== savedPrompt;
+    agentPrompt !== savedPrompt ||
+    owners?.join(", ") !== savedOwners;
   // A saved agent the host no longer offers stays selectable, so opening settings never changes it.
   const options = [
     { value: AUTOMATIC, label: "Automatic: first ready provider, default model" },
@@ -196,13 +202,25 @@ function PreferencesForm({
           />
         </SettingsCard>
       </SettingsSection>
+      <SettingsSection title="All tab">
+        <SettingsCard>
+          <SettingsInput
+            label="Owners"
+            hint="GitHub organizations or users, separated by commas. The All tab, before the project tabs, lists the open issues of all their repositories. Leave empty to hide it."
+            placeholder="octo-org, octocat"
+            initialValue={savedOwners}
+            onChangeText={setOwnersText}
+            error={owners ? undefined : `Use up to ${MAX_OWNERS} GitHub logins: letters, digits and hyphens`}
+          />
+        </SettingsCard>
+      </SettingsSection>
       <SettingsCard>
         <SettingsAction
           label={saveError ? "Could not save" : "Save changes"}
           hint={saveError ?? undefined}
           actionLabel={saving ? "Saving…" : "Save"}
-          disabled={saving || !changed || Boolean(prefixError)}
-          onPress={() => void onSave({ ...values, branchPrefix, agent, effort, agentPrompt })}
+          disabled={saving || !changed || Boolean(prefixError) || !owners}
+          onPress={() => void onSave({ ...values, branchPrefix, agent, effort, agentPrompt, owners: owners ?? [] })}
         />
       </SettingsCard>
     </>

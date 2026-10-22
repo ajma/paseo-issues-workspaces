@@ -63,6 +63,28 @@ describe("settings screen", () => {
     );
   });
 
+  it("saves the All tab's owners from comma-separated text", async () => {
+    const saves = readySettings(prefs({ owners: ["Klartika"] }));
+    renderSettings();
+    const input = screen.getByLabelText("Owners") as HTMLInputElement;
+    expect(input.value).toBe("Klartika");
+
+    fireEvent.change(input, { target: { value: "Klartika, Elegia-io portico-ch" } });
+    fireEvent.click(save());
+
+    await waitFor(() => expect(saves).toEqual([prefs({ owners: ["Klartika", "Elegia-io", "portico-ch"] })]));
+  });
+
+  it("blocks saving an owner that is not a GitHub login", () => {
+    readySettings(prefs());
+    renderSettings();
+
+    fireEvent.change(screen.getByLabelText("Owners"), { target: { value: "Klartika/repo" } });
+
+    expect(screen.getByRole("alert").textContent).toMatch(/GitHub logins/);
+    expect((save() as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("blocks saving a branch prefix git would reject", () => {
     readySettings(prefs());
     renderSettings();

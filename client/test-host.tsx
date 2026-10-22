@@ -22,6 +22,8 @@ export const host = {
   remoteWorkspaces: new Map<string, unknown[]>(),
   remoteProjects: new Map<string, unknown[]>(),
   remoteProviders: new Map<string, unknown[]>(),
+  /** Other hosts' project lists wait for this, to test what shows before they arrive. */
+  remoteProjectsGate: Promise.resolve(),
   /** Workspaces and agents created through another host's connection, by server id. */
   remoteCreated: [] as { serverId: string; options: any }[],
   remoteAgents: [] as { serverId: string; options: any }[],
@@ -54,7 +56,12 @@ export const clientModule = {
         };
       },
     },
-    projects: { list: async () => ({ projects: host.remoteProjects.get(serverId) ?? [] }) },
+    projects: {
+      list: async () => {
+        await host.remoteProjectsGate;
+        return { projects: host.remoteProjects.get(serverId) ?? [] };
+      },
+    },
     providers: { snapshot: async () => ({ entries: host.remoteProviders.get(serverId) ?? [] }) },
   }),
   usePaseo: () => ({ providers: { snapshot: async () => ({ entries: host.providers }) } }),
@@ -163,6 +170,7 @@ export function readySettings(values: Preferences) {
 
 export function resetHost() {
   host.rpcs.clear();
+  host.remoteProjectsGate = Promise.resolve();
   host.settings = null;
   host.hosts = [];
   host.remoteWorkspaces.clear();
