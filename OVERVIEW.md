@@ -2,11 +2,11 @@ Issues Workspaces lists a project's open GitHub issues, laid out like GitHub's i
 
 ## The screen
 
-When you have more than one GitHub project, a row of tabs at the top picks the one to show, each with the project's icon from Paseo and the number of its open issues assigned to you. Below it are the search box and that project's issues, newest first, 25 to a page with GitHub's pager. Each page is fetched from GitHub when you open it.
+When you have more than one GitHub project, a row of tabs at the top picks the one to show, each with the project's icon from Paseo and the number of its open issues assigned to you. Below it are the search box and that project's issues, newest first unless you pick another order, 25 to a page with GitHub's pager. Each page is fetched from GitHub when you open it.
 
 The search box takes GitHub's issue search syntax and starts with `assignee:@me`. `is:issue state:open` is always part of the search, so only open issues appear. Try `label:bug`, `author:octocat`, `no:assignee`, or `NOT iOS in:title` to leave out issues with a word in the title; clearing the box lists every open issue.
 
-As on github.com, the table's header shows the open count and the Author, Labels, Milestones, Assignees and Types menus, filled from the project's repository. Picking an entry edits the search, so the box always shows what is applied. The header also switches between a comfortable and a compact density.
+As on github.com, the table's header shows the open count and the Author, Labels, Milestones, Assignees and Types menus, filled from the project's repository. Picking an entry edits the search, so the box always shows what is applied. The sort menu after them orders the issues as GitHub does: newest, oldest, recently updated, least recently updated, most commented or most reactions. The header also switches between a comfortable and a compact density.
 
 Each issue shows GitHub's label colors and a **Create workspace** button, or **Open workspace** when a workspace already covers it. As with GitHub's split buttons, the arrow beside **Create workspace** picks what the button does: **Create workspace** or **Create and start an agent**. Both actions open the new workspace after creation succeeds. Tapping an issue's title opens it on GitHub.
 
@@ -39,7 +39,7 @@ Open the settings with the gear button next to the search box, the **Issues Work
 - **Effort**: how hard that agent thinks, from the levels the chosen model offers, such as low, medium or high. Model default uses the model's own default, as does a level the model does not offer.
 - **Agent prompt**: the agent's first message. `{number}`, `{title}`, `{url}` and `{repo}` are filled in from the issue. The default asks the agent to read the issue with `gh`, fix the root cause with tests if it reports a bug or otherwise do what it asks, and summarize the change.
 
-The selected project, search and density are saved with these settings. Settings are stored on each host and shared by every client connected to it.
+The selected project, search, sort order and density are saved with these settings. Settings are stored on each host and shared by every client connected to it.
 
 ## Access and limits
 

@@ -17,6 +17,7 @@ import {
   type Density,
   type Issue,
   type Preferences,
+  type Sort,
 } from "../shared/issues";
 import { FilterControls, type MenuId } from "./filter-bar";
 import { pickProject, remoteOnlyProjects, showProjectSelector, type ProjectOption } from "./issue-list";
@@ -75,9 +76,11 @@ export function IssuesScreen({
   // Local choices apply at once; saved values carry them across sessions and clients.
   const [queryChoice, setQueryChoice] = useState<string | null>(null);
   const [densityChoice, setDensityChoice] = useState<Density | null>(null);
+  const [sortChoice, setSortChoice] = useState<Sort | null>(null);
   const [repoChoice, setRepoChoice] = useState<string | null>(null);
   const query = queryChoice ?? saved?.searchQuery ?? DEFAULT_QUERY;
   const density = densityChoice ?? saved?.density ?? "comfortable";
+  const sort = sortChoice ?? saved?.sort ?? "created-desc";
   const prefs = effectivePreferences(saved ?? DEFAULT_PREFERENCES);
 
   const projects = useQuery({ queryKey: PROJECTS_QUERY_KEY, queryFn: () => listProjects({}) });
@@ -252,6 +255,7 @@ export function IssuesScreen({
             <RepoTable
               project={selected}
               query={query}
+              sort={sort}
               page={page}
               onPageChange={(next) => {
                 setPage(next);
@@ -281,6 +285,12 @@ export function IssuesScreen({
                   repo={selected.repo}
                   query={query}
                   onQueryChange={search}
+                  sort={sort}
+                  onSortChange={(next) => {
+                    setSortChoice(next);
+                    setPage(1);
+                    void savePreferences({ sort: next });
+                  }}
                   density={density}
                   onDensityChange={(next) => {
                     setDensityChoice(next);

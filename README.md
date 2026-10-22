@@ -8,6 +8,7 @@ A [Paseo](https://paseo.sh) plugin that shows a project's open GitHub issues, la
 
 - **GitHub's issue list in Paseo.** Label colors, authors, ages, and the comfortable and compact densities, 25 issues to a page.
 - **GitHub's search syntax.** The search box starts at `assignee:@me`. The Author, Labels, Milestones, Assignees and Types menus edit the search text, so the box always shows what is applied.
+- **GitHub's sort orders.** Newest, oldest, recently updated, least recently updated, most commented or most reactions, picked from the sort menu in the table header and remembered.
 - **One tab per project.** Each tab has the project's Paseo icon and a count of the open issues assigned to you.
 - **Create workspace** creates a worktree on a new `issue/<number>-<slug>` branch from a freshly fetched default branch, titled `#<number> <title>`.
 - **Create and start an agent** also starts an agent in the new workspace with a prompt you can edit. Pick it from the arrow beside the button, as on GitHub.

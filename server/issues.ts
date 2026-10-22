@@ -13,6 +13,7 @@ import {
   type Issue,
   type Preferences,
   type PullRequest,
+  type Sort,
 } from "../shared/issues";
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -207,14 +208,15 @@ type SearchItem = {
 };
 
 /**
- * One page of open issues in `repo` matching `query`, newest first, the way github.com lists
+ * One page of open issues in `repo` matching `query`, in `sort` order, the way github.com lists
  * them. Uses the search API, which allows 30 searches a minute and 1,000 results per search.
  */
-async function searchPage(repo: string, query: string, page: number) {
+async function searchPage(repo: string, query: string, page: number, sort: Sort) {
+  const [field, order] = sort.split("-");
   const { stdout } = await gh([
     "api", "--method", "GET", "search/issues",
     "-f", `q=repo:${repo} is:issue state:open ${query}`.trim(),
-    "-f", "sort=created", "-f", "order=desc",
+    "-f", `sort=${field}`, "-f", `order=${order}`,
     "-F", `per_page=${PAGE_SIZE}`, "-F", `page=${page}`,
   ]);
   const result = JSON.parse(stdout) as { total_count: number; items: SearchItem[] };
@@ -331,11 +333,17 @@ export async function pullRequests(input: { repo: string; numbers: number[] }) {
 export async function issuesPage(
   paseo: PaseoApi,
   prefs: Preferences,
-  { projectId, repo, query, page }: { projectId?: string; repo?: string; query: string; page: number },
+  {
+    projectId,
+    repo,
+    query,
+    page,
+    sort = "created-desc",
+  }: { projectId?: string; repo?: string; query: string; page: number; sort?: Sort },
 ) {
   await findGh();
   const search = (slug: string) =>
-    searchPage(slug, normalizeQuery(query), page).catch((error: unknown) => {
+    searchPage(slug, normalizeQuery(query), page, sort).catch((error: unknown) => {
       const text = errorText(error);
       throw new Error(SIGNED_OUT.test(text) ? "GitHub CLI is not signed in on this host. Run `gh auth login`." : text);
     });

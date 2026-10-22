@@ -4,7 +4,15 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { issuesPageRpc, pageCountFor, pullRequestsRpc, type CreateAction, type Density, type Issue } from "../shared/issues";
+import {
+  issuesPageRpc,
+  pageCountFor,
+  pullRequestsRpc,
+  type CreateAction,
+  type Density,
+  type Issue,
+  type Sort,
+} from "../shared/issues";
 import { isDarkTheme, openIssueColor } from "./github-style";
 import { findRemoteWorkspaces, withRemoteCoverage, type ProjectOption, type RemoteWorkspace } from "./issue-list";
 import { IssueRow } from "./issue-row";
@@ -24,6 +32,7 @@ const formatCount = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",
 export function RepoTable({
   project,
   query,
+  sort,
   page,
   onPageChange,
   density,
@@ -46,6 +55,7 @@ export function RepoTable({
 }: Pick<PluginScreenProps, "theme" | "layout" | "navigation"> & {
   project: ProjectOption;
   query: string;
+  sort: Sort;
   page: number;
   onPageChange: (page: number) => void;
   density: Density;
@@ -77,9 +87,11 @@ export function RepoTable({
   };
   const fetchPage = useRpc(issuesPageRpc);
   const result = useQuery({
-    queryKey: [...PAGE_QUERY_KEY, project.key, query, page],
+    queryKey: [...PAGE_QUERY_KEY, project.key, query, sort, page],
     queryFn: () =>
-      fetchPage(project.remote ? { repo: project.repo, query, page } : { projectId: project.projectId, query, page }),
+      fetchPage(
+        project.remote ? { repo: project.repo, query, page, sort } : { projectId: project.projectId, query, page, sort },
+      ),
     // Keep the previous page on screen, dimmed, until the next one arrives.
     placeholderData: keepPreviousData,
     // GitHub allows 30 searches a minute; revisiting a page shouldn't spend one. Refresh still does.

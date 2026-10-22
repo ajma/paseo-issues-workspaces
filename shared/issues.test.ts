@@ -99,6 +99,7 @@ describe("preferences", () => {
       selectedRepo: "",
       searchQuery: DEFAULT_QUERY,
       density: "comfortable",
+      sort: "created-desc",
       agent: "",
       effort: "",
       agentPrompt: DEFAULT_AGENT_PROMPT,

@@ -70,7 +70,7 @@ function serveProjects(repos: RepoProject[], skipped: { projectName: string; rea
   host.rpcs.set("issues.projects", async () => ({ repos, skipped }));
 }
 
-type PageRequest = { projectId?: string; repo?: string; query: string; page: number };
+type PageRequest = { projectId?: string; repo?: string; query: string; page: number; sort: string };
 
 /** Fakes issues.page from every match per project id or repository, 25 to a page, recording requests. */
 function servePages(table: Record<string, Issue[] | Error>) {
@@ -369,7 +369,7 @@ describe("issues screen: loading", () => {
     renderScreen();
 
     expect(await screen.findByText("Issue 1")).toBeTruthy();
-    expect(requests).toEqual([{ projectId: "p-octo/repo", query: "assignee:@me", page: 1 }]);
+    expect(requests).toEqual([{ projectId: "p-octo/repo", query: "assignee:@me", page: 1, sort: "created-desc" }]);
   });
 
   it("starts from the saved search", async () => {
@@ -598,7 +598,7 @@ describe("issues screen: project picker", () => {
 
     expect(await screen.findByText("Issue 99")).toBeTruthy();
     expect(screen.queryByText("Issue 26")).toBeNull();
-    expect(requests.at(-1)).toEqual({ projectId: "p-Octo/B", query: "assignee:@me", page: 1 });
+    expect(requests.at(-1)).toEqual({ projectId: "p-Octo/B", query: "assignee:@me", page: 1, sort: "created-desc" });
     expect(screen.getByRole("tab", { name: "B (Octo/B)" }).getAttribute("aria-selected")).toBe("true");
     await waitFor(() => expect(saves.at(-1)?.selectedRepo).toBe("octo/b"));
   });
@@ -752,7 +752,12 @@ describe("issues screen: search", () => {
     search("assignee:@me   label:bug");
 
     await waitFor(() =>
-      expect(requests.at(-1)).toEqual({ projectId: "p-octo/repo", query: "assignee:@me label:bug", page: 1 }),
+      expect(requests.at(-1)).toEqual({
+        projectId: "p-octo/repo",
+        query: "assignee:@me label:bug",
+        page: 1,
+        sort: "created-desc",
+      }),
     );
     expect(saves.at(-1)?.searchQuery).toBe("assignee:@me label:bug");
   });
@@ -1010,6 +1015,50 @@ describe("issues screen: filter bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next page" }));
 
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("sorts newest first, and changes and saves the order from the sort menu", async () => {
+    const { requests, saves } = setUp();
+    await screen.findByText("Issue 1");
+    expect(requests.at(-1)?.sort).toBe("created-desc");
+
+    const menu = await openMenu("Sort, Newest");
+    expect(within(menu).queryByRole("textbox")).toBeNull();
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Newest",
+      "Oldest",
+      "Recently updated",
+      "Least recently updated",
+      "Most commented",
+      "Most reactions",
+    ]);
+    fireEvent.click(row(menu, "Recently updated"));
+
+    await waitFor(() => expect(requests.at(-1)).toMatchObject({ sort: "updated-desc", page: 1 }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sort, Recently updated" })).toBeTruthy();
+    await waitFor(() => expect(saves.at(-1)?.sort).toBe("updated-desc"));
+  });
+
+  it("lists every order when opened from a menu with a search typed", async () => {
+    setUp();
+    const labels = await openMenu("Labels");
+    fireEvent.change(within(labels).getByLabelText("Filter labels"), { target: { value: "android" } });
+
+    const menu = await openMenu("Sort");
+
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(6);
+  });
+
+  it("starts from the saved order", async () => {
+    readySettings(prefs({ sort: "comments-desc" }));
+    serveProjects([project("octo/repo")]);
+    serveOptions(options);
+    const requests = servePages({ "p-octo/repo": [issue(1)] });
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: "Sort, Most commented" })).toBeTruthy();
+    expect(requests.map((r) => r.sort)).toEqual(["comments-desc"]);
   });
 
   it("switches density and saves it", async () => {
@@ -1409,7 +1458,7 @@ describe("issues screen: projects on other hosts", () => {
 
     expect(await screen.findByText("Remote issue")).toBeTruthy();
     expect(screen.getByText("on Build box")).toBeTruthy();
-    expect(requests.at(-1)).toEqual({ repo: "octo/there", query: "assignee:@me", page: 1 });
+    expect(requests.at(-1)).toEqual({ repo: "octo/there", query: "assignee:@me", page: 1, sort: "created-desc" });
   });
 
   it("does not offer a repository this host also has", async () => {

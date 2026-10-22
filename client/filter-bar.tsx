@@ -4,7 +4,7 @@ import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";
-import { filterOptionsRpc, type Density } from "../shared/issues";
+import { filterOptionsRpc, SORT_LABELS, SORTS, type Density, type Sort } from "../shared/issues";
 import { isDarkTheme, issueTypeColor, labelColors } from "./github-style";
 import {
   filterValues,
@@ -17,10 +17,10 @@ import {
 } from "./query-filters";
 
 type Theme = PluginScreenProps["theme"];
-export type MenuId = "author" | "label" | "milestone" | "assignee" | "type";
+export type MenuId = FilterKey | "sort";
 
 /** Labels combine, so only they show a count; the others hold one value. */
-const MENUS: { id: MenuId; label: string; title: string; multiple?: boolean }[] = [
+const MENUS: { id: FilterKey; label: string; title: string; multiple?: boolean }[] = [
   { id: "author", label: "Author", title: "Filter by author" },
   { id: "label", label: "Labels", title: "Filter by label", multiple: true },
   { id: "milestone", label: "Milestones", title: "Filter by milestone" },
@@ -39,12 +39,14 @@ type Item = {
 
 /**
  * GitHub's filters for one repository, shown in the issue table's header. Each menu edits the
- * search query, so the search box always shows what is applied.
+ * search query, so the search box always shows what is applied. The sort menu sets the order.
  */
 export function FilterControls({
   repo,
   query,
   onQueryChange,
+  sort,
+  onSortChange,
   density,
   onDensityChange,
   openMenu,
@@ -55,6 +57,8 @@ export function FilterControls({
   repo: string;
   query: string;
   onQueryChange: (query: string) => void;
+  sort: Sort;
+  onSortChange: (sort: Sort) => void;
   density: Density;
   onDensityChange: (density: Density) => void;
   openMenu: MenuId | null;
@@ -78,6 +82,19 @@ export function FilterControls({
   };
 
   function items(menu: MenuId): { none?: Item; list: Item[]; custom?: (text: string) => Item | null } {
+    if (menu === "sort") {
+      return {
+        list: SORTS.map((id) => ({
+          key: id,
+          label: SORT_LABELS[id],
+          selected: id === sort,
+          onPress: () => {
+            onSortChange(id);
+            onOpenMenu(null);
+          },
+        })),
+      };
+    }
     const data = options.data;
     if (!data) return { list: [] };
     const person = (key: "author" | "assignee") => {
@@ -162,22 +179,24 @@ export function FilterControls({
     };
   }
 
-  const active = (menu: MenuId) => filterValues(query, menu).length + (hasNone(query, menu) ? 1 : 0);
-  const current = MENUS.find((m) => m.id === openMenu);
+  const active = (menu: FilterKey) => filterValues(query, menu).length + (hasNone(query, menu) ? 1 : 0);
+  const current =
+    openMenu === "sort"
+      ? { id: "sort" as const, label: "Sort", title: "Sort by" }
+      : MENUS.find((m) => m.id === openMenu);
 
-  const buttonsRow = MENUS.map((m) => {
-    const count = active(m.id);
-    const open = openMenu === m.id;
+  const menuButton = (id: MenuId, accessibilityLabel: string, children: ReactNode) => {
+    const open = openMenu === id;
     return (
       <Pressable
-        key={m.id}
+        key={id}
         accessibilityRole="button"
-        accessibilityLabel={!count ? m.label : m.multiple ? `${m.label}, ${count} applied` : `${m.label}, filtered`}
+        accessibilityLabel={accessibilityLabel}
         aria-expanded={open}
-        onPress={() => onOpenMenu(open ? null : m.id)}
+        onPress={() => onOpenMenu(open ? null : id)}
         onLayout={(e) => {
           const { x, width: w } = e.nativeEvent.layout;
-          setButtons((current) => ({ ...current, [m.id]: { x, width: w } }));
+          setButtons((current) => ({ ...current, [id]: { x, width: w } }));
         }}
         style={({ pressed }) => ({
           flexDirection: "row",
@@ -189,6 +208,17 @@ export function FilterControls({
           backgroundColor: open || pressed ? theme.colors.surface2 : "transparent",
         })}
       >
+        {children}
+        <Icon name="ChevronDown" size={14} color={theme.colors.foregroundMuted} />
+      </Pressable>
+    );
+  };
+  const buttonsRow = MENUS.map((m) => {
+    const count = active(m.id);
+    return menuButton(
+      m.id,
+      !count ? m.label : m.multiple ? `${m.label}, ${count} applied` : `${m.label}, filtered`,
+      <>
         <Text
           style={{
             color: count ? theme.colors.foreground : theme.colors.foregroundMuted,
@@ -203,10 +233,20 @@ export function FilterControls({
             <Text style={{ color: theme.colors.foreground, fontSize: 11, textAlign: "center" }}>{count}</Text>
           </View>
         ) : null}
-        <Icon name="ChevronDown" size={14} color={theme.colors.foregroundMuted} />
-      </Pressable>
+      </>,
     );
   });
+  // GitHub's sort menu sits after the filters and names the current order.
+  buttonsRow.push(
+    menuButton(
+      "sort",
+      `Sort, ${SORT_LABELS[sort]}`,
+      <>
+        <Icon name="ArrowUpDown" size={14} color={theme.colors.foregroundMuted} />
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>{SORT_LABELS[sort]}</Text>
+      </>,
+    ),
+  );
   const anchor = current ? buttons[current.id] : undefined;
 
   return (
@@ -225,10 +265,13 @@ export function FilterControls({
 
       {current ? (
         <FilterMenu
+          // Each menu starts with an empty search; the sort menu has no box to clear one.
+          key={current.id}
           title={current.title}
-          placeholder={`Filter ${current.label.toLowerCase()}`}
-          loading={options.isPending}
-          error={options.isError ? String(options.error) : null}
+          // Six fixed orders need no search box or loading state.
+          placeholder={current.id === "sort" ? undefined : `Filter ${current.label.toLowerCase()}`}
+          loading={current.id !== "sort" && options.isPending}
+          error={current.id !== "sort" && options.isError ? String(options.error) : null}
           {...items(current.id)}
           // Native platforms deliver no touches outside a parent's bounds, so a dropdown hanging
           // below the header could not be pressed there: they get the sheet.
@@ -262,7 +305,8 @@ function FilterMenu({
   right,
 }: {
   title: string;
-  placeholder: string;
+  /** Labels the search box; a menu without one has no search box. */
+  placeholder?: string;
   loading: boolean;
   error: string | null;
   none?: Item;
@@ -280,26 +324,28 @@ function FilterMenu({
 
   const body = (
     <View style={{ gap: 4 }}>
-      <TextInput
-        value={text}
-        onChangeText={setText}
-        placeholder={placeholder}
-        placeholderTextColor={theme.colors.foregroundMuted}
-        autoCapitalize="none"
-        autoCorrect={false}
-        accessibilityLabel={placeholder}
-        style={{
-          margin: 8,
-          paddingVertical: 6,
-          paddingHorizontal: 8,
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: 6,
-          color: theme.colors.foreground,
-          backgroundColor: theme.colors.surface0,
-          fontSize: 14,
-        }}
-      />
+      {placeholder ? (
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          placeholder={placeholder}
+          placeholderTextColor={theme.colors.foregroundMuted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel={placeholder}
+          style={{
+            margin: 8,
+            paddingVertical: 6,
+            paddingHorizontal: 8,
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+            borderRadius: 6,
+            color: theme.colors.foreground,
+            backgroundColor: theme.colors.surface0,
+            fontSize: 14,
+          }}
+        />
+      ) : null}
       {loading ? <Text style={{ color: theme.colors.foregroundMuted, padding: 12 }}>Loading…</Text> : null}
       {error ? <Text style={{ color: theme.colors.statusDanger, padding: 12 }}>{error}</Text> : null}
       <ScrollView style={{ maxHeight: compact ? undefined : 320 }}>

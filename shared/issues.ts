@@ -17,6 +17,18 @@ export function pageCountFor(totalCount: number): number {
 export const DENSITIES = ["comfortable", "compact"] as const;
 export type Density = (typeof DENSITIES)[number];
 
+/** GitHub's issue sort orders, as `<search API sort>-<order>`. */
+export const SORTS = ["created-desc", "created-asc", "updated-desc", "updated-asc", "comments-desc", "reactions-desc"] as const;
+export type Sort = (typeof SORTS)[number];
+export const SORT_LABELS: Record<Sort, string> = {
+  "created-desc": "Newest",
+  "created-asc": "Oldest",
+  "updated-desc": "Recently updated",
+  "updated-asc": "Least recently updated",
+  "comments-desc": "Most commented",
+  "reactions-desc": "Most reactions",
+};
+
 export const DEFAULT_AGENT_PROMPT = `Work on GitHub issue #{number} in {repo}: {title}
 {url}
 
@@ -40,6 +52,7 @@ export const preferences = defineSettings({
     /** The last search, in GitHub's issue search syntax. */
     searchQuery: z.string().default(DEFAULT_QUERY),
     density: z.enum(DENSITIES).default("comfortable"),
+    sort: z.enum(SORTS).default("created-desc"),
     /** `provider/model` for "Create and start". Empty uses the first ready provider and its default model. */
     agent: z.string().default(""),
     /** Thinking option id (`low`, `high`, ...) for "Create and start". Empty, or one the model lacks, uses the model's default. */
@@ -74,6 +87,7 @@ export function effectivePreferences(values: Preferences): Preferences {
     selectedRepo: values.selectedRepo,
     searchQuery: values.searchQuery,
     density: values.density,
+    sort: values.sort,
     agent: values.agent,
     effort: values.effort,
     agentPrompt: effectiveAgentPrompt(values.agentPrompt),
@@ -241,7 +255,7 @@ export const projectsRpc = defineRpc({
   }),
 });
 
-/** One page of open issues in one repository, newest first. */
+/** One page of open issues in one repository, in the chosen order. */
 export const issuesPageRpc = defineRpc({
   name: "issues.page",
   /** `projectId` for this host's projects; `repo` for a repository only another host has. */
@@ -252,6 +266,7 @@ export const issuesPageRpc = defineRpc({
       /** GitHub's issue search syntax; `is:issue state:open` is implied. */
       query: z.string().max(1000),
       page: z.number().int().min(1),
+      sort: z.enum(SORTS).default("created-desc"),
     })
     .refine((v) => Boolean(v.projectId) !== Boolean(v.repo), "Pass exactly one of projectId and repo"),
   output: z.object({ issues: z.array(issue), totalCount: z.number() }),

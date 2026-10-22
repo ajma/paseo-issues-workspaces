@@ -365,6 +365,15 @@ describe("issuesPage: searching", () => {
     ]);
   });
 
+  it("asks GitHub for the chosen order", async () => {
+    const { api } = await oneProject();
+
+    await mod.issuesPage(api, prefs(), { projectId: "p1", query: "", page: 1, sort: "updated-asc" });
+    await mod.issuesPage(api, prefs(), { projectId: "p1", query: "", page: 1, sort: "reactions-desc" });
+
+    expect(searches().map(({ sort, order }) => `${sort} ${order}`)).toEqual(["updated asc", "reactions desc"]);
+  });
+
   it("searches every open issue for an empty query", async () => {
     const { api } = await oneProject();
 
